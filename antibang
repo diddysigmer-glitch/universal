@@ -1,9 +1,9 @@
 --[[
-  UI + Antibang Keybind (VOID TRIP WITHOUT PAUSE SCREEN)
-  - Teleports straight down into the void (Y = -1000) – no horizontal move, so no loading.
-  - Extreme spin (180° per frame) the entire time.
-  - Stops spinning exactly on return.
-  - Triple‑layered health protection prevents death/pause.
+  UI + Antibang Keybind (NULL ZONE: Y = -300,000 – MINIMAL LOADING PAUSE)
+  - Teleports straight down to Y = -300,000 (same X and Z) – no horizontal movement.
+  - Spins 180° per frame for 1 second.
+  - Health locked, visible to other players.
+  - No terrain streaming = almost zero "Gameplay Paused".
 ]]
 
 local Players = game:GetService("Players")
@@ -65,11 +65,11 @@ local isBinding = false
 local isRunning = false
 local inputConnection = nil
 local healthGuard = nil
-local deathConnection = nil  -- extra layer
-local currentSpinControl = nil
+local deathConnection = nil
+local voidLoop = nil
 
 -- ==============================
--- THE ANTIBANG SEQUENCE
+-- ANTIBANG SEQUENCE (Y = -300,000)
 -- ==============================
 local function executeAntiBang()
     if isRunning or isBinding then return end
@@ -85,7 +85,7 @@ local function executeAntiBang()
     local startCF = rootPart.CFrame
     local startPos = startCF.Position
 
-    -- [1] SUPER HEALTH LOCK – runs every frame (PreRender) to guarantee no death
+    -- Health lock
     local guard
     guard = RunService.PreRender:Connect(function()
         if humanoid and humanoid.Parent then
@@ -96,46 +96,57 @@ local function executeAntiBang()
     end)
     healthGuard = guard
 
-    -- [2] EXTRA LAYER: if the Died event somehow fires, instantly revive
+    -- Died fallback
     deathConnection = humanoid.Died:Connect(function()
         humanoid.Health = humanoid.MaxHealth
-        humanoid:LoadCharacter()  -- forces a quick respawn (but we keep anchored so it's seamless)
+        humanoid:LoadCharacter()
     end)
 
-    -- [3] Anchor & reset physics
-    rootPart.Anchored = true
+    -- Reset physics
     rootPart.AssemblyLinearVelocity = Vector3.zero
     rootPart.AssemblyAngularVelocity = Vector3.zero
 
-    -- [4] START EXTREME SPINNING (180° per frame)
-    local spinControl = { stop = false }
-    currentSpinControl = spinControl
+    -- NULL ZONE: straight down to Y = -300,000 (same X and Z)
+    local nullZonePos = Vector3.new(startPos.X, -300000, startPos.Z)
 
-    task.spawn(function()
-        while not spinControl.stop do
-            rootPart.CFrame = rootPart.CFrame * CFrame.Angles(0, math.rad(180), 0)
+    -- Spin + hold loop (1 second)
+    local duration = 1
+    local startTime = os.clock()
+    local running = true
+    local angleCounter = 0
+
+    voidLoop = task.spawn(function()
+        while running do
+            if os.clock() - startTime >= duration then
+                running = false
+                break
+            end
+
+            angleCounter = angleCounter + 180
+            local rot = CFrame.Angles(0, math.rad(angleCounter), 0)
+            rootPart.CFrame = CFrame.new(nullZonePos) * rot
+
+            rootPart.AssemblyLinearVelocity = Vector3.zero
+            rootPart.AssemblyAngularVelocity = Vector3.zero
+
             task.wait()
         end
     end)
 
-    -- [5] INSTANT TELEPORT to the VOID (straight down, same X/Z – NO HORIZONTAL MOVE)
-    -- This avoids any loading/streaming pause.
-    rootPart.CFrame = CFrame.new(startPos.X, -1000, startPos.Z)
+    task.wait(duration)
 
-    -- [6] Wait 1.5 seconds inside the void (spinning the whole time)
-    task.wait(1.5)
+    running = false
+    if voidLoop then
+        task.cancel(voidLoop)
+        voidLoop = nil
+    end
 
-    -- [7] STOP SPINNING (exactly before teleporting back)
-    spinControl.stop = true
-    currentSpinControl = nil
-
-    -- [8] INSTANT TELEPORT BACK to original position
+    -- Return to start, stop spinning
     rootPart.CFrame = startCF
-    rootPart.Anchored = false
     rootPart.AssemblyLinearVelocity = Vector3.zero
     rootPart.AssemblyAngularVelocity = Vector3.zero
 
-    -- [9] Clean up all guards
+    -- Clean up
     if guard then
         guard:Disconnect()
         healthGuard = nil
@@ -147,7 +158,7 @@ local function executeAntiBang()
     humanoid.Health = humanoid.MaxHealth
 
     isRunning = false
-    print("✓ Anti-bang complete – void trip without pause screen.")
+    print("✓ Anti-bang complete – Y=-300k null zone (minimal pause).")
 end
 
 -- ==============================
@@ -182,9 +193,9 @@ bindButton.MouseButton1Click:Connect(function()
 end)
 
 destroyButton.MouseButton1Click:Connect(function()
-    if currentSpinControl then
-        currentSpinControl.stop = true
-        currentSpinControl = nil
+    if voidLoop then
+        task.cancel(voidLoop)
+        voidLoop = nil
     end
     if inputConnection then inputConnection:Disconnect() end
     if healthGuard then healthGuard:Disconnect() end
