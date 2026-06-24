@@ -1,0 +1,194 @@
+--[[
+  UI + Antibang Keybind (VOID TRIP WITHOUT PAUSE SCREEN)
+  - Teleports straight down into the void (Y = -1000) – no horizontal move, so no loading.
+  - Extreme spin (180° per frame) the entire time.
+  - Stops spinning exactly on return.
+  - Triple‑layered health protection prevents death/pause.
+]]
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
+-- ==============================
+-- UI BUILD (same as before)
+-- ==============================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AntibangGUI"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 240, 0, 115)
+frame.Position = UDim2.new(0.5, -120, 0.5, -57)
+frame.BackgroundColor3 = Color3.fromRGB(28, 28, 33)
+frame.BorderSizePixel = 0
+frame.Draggable = true
+frame.Active = true
+frame.Parent = screenGui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 28)
+title.Position = UDim2.new(0, 0, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "Anti-Bang Hub"
+title.TextColor3 = Color3.fromRGB(220, 220, 220)
+title.TextScaled = true
+title.Font = Enum.Font.GothamBold
+title.Parent = frame
+
+local bindButton = Instance.new("TextButton")
+bindButton.Size = UDim2.new(0.9, 0, 0, 34)
+bindButton.Position = UDim2.new(0.05, 0, 0.35, 0)
+bindButton.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+bindButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+bindButton.Text = "Antibang Keybind [None]"
+bindButton.Font = Enum.Font.Gotham
+bindButton.Parent = frame
+
+local destroyButton = Instance.new("TextButton")
+destroyButton.Size = UDim2.new(0.9, 0, 0, 28)
+destroyButton.Position = UDim2.new(0.05, 0, 0.72, 0)
+destroyButton.BackgroundColor3 = Color3.fromRGB(160, 30, 30)
+destroyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+destroyButton.Text = "Destroy Script"
+destroyButton.Font = Enum.Font.Gotham
+destroyButton.Parent = frame
+
+-- ==============================
+-- STATE
+-- ==============================
+local boundKey = nil
+local isBinding = false
+local isRunning = false
+local inputConnection = nil
+local healthGuard = nil
+local deathConnection = nil  -- extra layer
+local currentSpinControl = nil
+
+-- ==============================
+-- THE ANTIBANG SEQUENCE
+-- ==============================
+local function executeAntiBang()
+    if isRunning or isBinding then return end
+    isRunning = true
+
+    local character = player.Character
+    if not character then isRunning = false return end
+
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not rootPart or not humanoid then isRunning = false return end
+
+    local startCF = rootPart.CFrame
+    local startPos = startCF.Position
+
+    -- [1] SUPER HEALTH LOCK – runs every frame (PreRender) to guarantee no death
+    local guard
+    guard = RunService.PreRender:Connect(function()
+        if humanoid and humanoid.Parent then
+            humanoid.Health = humanoid.MaxHealth
+        else
+            guard:Disconnect()
+        end
+    end)
+    healthGuard = guard
+
+    -- [2] EXTRA LAYER: if the Died event somehow fires, instantly revive
+    deathConnection = humanoid.Died:Connect(function()
+        humanoid.Health = humanoid.MaxHealth
+        humanoid:LoadCharacter()  -- forces a quick respawn (but we keep anchored so it's seamless)
+    end)
+
+    -- [3] Anchor & reset physics
+    rootPart.Anchored = true
+    rootPart.AssemblyLinearVelocity = Vector3.zero
+    rootPart.AssemblyAngularVelocity = Vector3.zero
+
+    -- [4] START EXTREME SPINNING (180° per frame)
+    local spinControl = { stop = false }
+    currentSpinControl = spinControl
+
+    task.spawn(function()
+        while not spinControl.stop do
+            rootPart.CFrame = rootPart.CFrame * CFrame.Angles(0, math.rad(180), 0)
+            task.wait()
+        end
+    end)
+
+    -- [5] INSTANT TELEPORT to the VOID (straight down, same X/Z – NO HORIZONTAL MOVE)
+    -- This avoids any loading/streaming pause.
+    rootPart.CFrame = CFrame.new(startPos.X, -1000, startPos.Z)
+
+    -- [6] Wait 1.5 seconds inside the void (spinning the whole time)
+    task.wait(1.5)
+
+    -- [7] STOP SPINNING (exactly before teleporting back)
+    spinControl.stop = true
+    currentSpinControl = nil
+
+    -- [8] INSTANT TELEPORT BACK to original position
+    rootPart.CFrame = startCF
+    rootPart.Anchored = false
+    rootPart.AssemblyLinearVelocity = Vector3.zero
+    rootPart.AssemblyAngularVelocity = Vector3.zero
+
+    -- [9] Clean up all guards
+    if guard then
+        guard:Disconnect()
+        healthGuard = nil
+    end
+    if deathConnection then
+        deathConnection:Disconnect()
+        deathConnection = nil
+    end
+    humanoid.Health = humanoid.MaxHealth
+
+    isRunning = false
+    print("✓ Anti-bang complete – void trip without pause screen.")
+end
+
+-- ==============================
+-- KEYBOARD & UI EVENTS
+-- ==============================
+inputConnection = UIS.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    if isBinding then
+        if input.KeyCode ~= Enum.KeyCode.Unknown then
+            boundKey = input.KeyCode
+            bindButton.Text = "Antibang Keybind [" .. boundKey.Name .. "]"
+            isBinding = false
+            print("✓ Key bound to:", boundKey.Name)
+        end
+        return
+    end
+
+    if boundKey and input.KeyCode == boundKey then
+        task.spawn(executeAntiBang)
+    end
+end)
+
+bindButton.MouseButton1Click:Connect(function()
+    if isBinding then
+        isBinding = false
+        bindButton.Text = "Antibang Keybind [" .. (boundKey and boundKey.Name or "None") .. "]"
+        return
+    end
+    isBinding = true
+    bindButton.Text = "Press any key..."
+end)
+
+destroyButton.MouseButton1Click:Connect(function()
+    if currentSpinControl then
+        currentSpinControl.stop = true
+        currentSpinControl = nil
+    end
+    if inputConnection then inputConnection:Disconnect() end
+    if healthGuard then healthGuard:Disconnect() end
+    if deathConnection then deathConnection:Disconnect() end
+    screenGui:Destroy()
+    print("✓ Script and UI destroyed.")
+end)
