@@ -1,0 +1,442 @@
+-- KURT.WTF Glitch Loader + Animated RGB Traces + Anti‑Bang + Baseplate Toggle + Smart Destroy (NO RESET)
+local player = game.Players.LocalPlayer
+local StarterGui = game:GetService("StarterGui")
+local RunService = game:GetService("RunService")
+local PlayerGui = player:WaitForChild("PlayerGui")
+local TweenService = game:GetService("TweenService")
+local UIS = game:GetService("UserInputService")
+
+-- --- 1. ANTI-DOUBLE EXECUTION ---
+if _G.KurtLoaded then 
+    StarterGui:SetCore("SendNotification", {
+        Title = "ALREADY ACTIVE",
+        Text = "Rejoin to re-execute the script!",
+        Duration = 5
+    })
+    return 
+end
+_G.KurtLoaded = true
+
+-- --- 2. LOADING SCREEN & RGB TRAIL ANIMATION ---
+local loadingGui = Instance.new("ScreenGui", PlayerGui)
+loadingGui.Name = "LoadingOverlay_Kurt"
+loadingGui.DisplayOrder = 999 
+loadingGui.IgnoreGuiInset = true
+
+local background = Instance.new("Frame", loadingGui)
+background.Size = UDim2.new(1, 0, 1, 0)
+background.BackgroundColor3 = Color3.new(0, 0, 0)
+background.BorderSizePixel = 0
+
+local barBack = Instance.new("Frame", background)
+barBack.Size = UDim2.new(0.4, 0, 0, 10)
+barBack.Position = UDim2.new(0.5, 0, 0.75, 0)
+barBack.AnchorPoint = Vector2.new(0.5, 0.5)
+barBack.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+barBack.BorderSizePixel = 0
+
+local barFill = Instance.new("Frame", barBack)
+barFill.Size = UDim2.new(0, 0, 1, 0)
+barFill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+barFill.BorderSizePixel = 0
+
+local loadingText = Instance.new("TextLabel", background)
+loadingText.Size = UDim2.new(1, 0, 0, 50)
+loadingText.Position = UDim2.new(0, 0, 0.8, 0)
+loadingText.BackgroundTransparency = 1
+loadingText.TextColor3 = Color3.new(1, 1, 1)
+loadingText.Text = "INITIALIZING SYSTEM..."
+loadingText.Font = Enum.Font.Code
+loadingText.TextSize = 20
+
+local flashText = Instance.new("TextLabel", background)
+flashText.Size = UDim2.new(1, 0, 0, 100)
+flashText.Position = UDim2.new(0.5, 0, 0.5, 0)
+flashText.AnchorPoint = Vector2.new(0.5, 0.5)
+flashText.BackgroundTransparency = 1
+flashText.TextColor3 = Color3.new(1, 1, 1)
+flashText.Text = "KURT.WTF"
+flashText.Font = Enum.Font.PermanentMarker 
+flashText.TextSize = 80
+flashText.TextTransparency = 1
+
+-- Stars (white dots)
+local stars = {}
+for i = 1, 50 do
+    local star = Instance.new("Frame", background)
+    star.Size = UDim2.new(0, math.random(1, 3), 0, math.random(1, 3))
+    star.Position = UDim2.new(math.random(), 0, math.random(), 0)
+    star.BackgroundColor3 = Color3.new(1, 1, 1)
+    star.BackgroundTransparency = math.random(0.2, 0.6)
+    table.insert(stars, {obj = star, speed = math.random(10, 50) / 1000})
+end
+
+local function spawnMovingTrail()
+    if not loadingGui.Parent then return end
+    local trail = Instance.new("Frame", background)
+    local isVertical = math.random() > 0.5
+    trail.Size = isVertical and UDim2.new(0, 2, 0, math.random(50, 150)) or UDim2.new(0, math.random(50, 150), 0, 2)
+    trail.Position = UDim2.new(math.random(), 0, math.random(), 0)
+    trail.BorderSizePixel = 0
+    
+    local grad = Instance.new("UIGradient", trail)
+    grad.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.5, 0),
+        NumberSequenceKeypoint.new(1, 1)
+    })
+
+    local moveSpeed = math.random(1, 2)
+    local moveGoal = isVertical and UDim2.new(trail.Position.X.Scale, 0, 1.2, 0) or UDim2.new(1.2, 0, trail.Position.Y.Scale, 0)
+    
+    local t = TweenService:Create(trail, TweenInfo.new(moveSpeed, Enum.EasingStyle.Linear), {Position = moveGoal})
+    t:Play()
+    
+    task.spawn(function()
+        while trail.Parent do
+            trail.BackgroundColor3 = Color3.fromHSV((tick() * 2) % 1, 1, 1)
+            RunService.RenderStepped:Wait()
+        end
+    end)
+    
+    t.Completed:Connect(function() trail:Destroy() end)
+end
+
+local animConnection
+animConnection = RunService.RenderStepped:Connect(function()
+    for _, starData in pairs(stars) do
+        local newX = starData.obj.Position.X.Scale + starData.speed
+        if newX > 1 then newX = -0.01 end
+        starData.obj.Position = UDim2.new(newX, 0, starData.obj.Position.Y.Scale, 0)
+    end
+    
+    if math.random() > 0.92 then spawnMovingTrail() end
+
+    if math.random() > 0.85 then
+        barFill.Position = UDim2.new(0, math.random(-2, 2), 0, 0)
+        barFill.BackgroundColor3 = (math.random() > 0.5) and Color3.new(1,1,1) or Color3.fromRGB(170, 0, 255)
+    else
+        barFill.Position = UDim2.new(0, 0, 0, 0)
+        barFill.BackgroundColor3 = Color3.new(1, 1, 1)
+    end
+end)
+
+-- Start Loading Bar Animation
+TweenService:Create(barFill, TweenInfo.new(5, Enum.EasingStyle.Linear), {Size = UDim2.new(1, 0, 1, 0)}):Play()
+
+-- Flash Text
+task.delay(4, function()
+    flashText.TextTransparency = 0
+    task.wait(0.1) flashText.TextTransparency = 0.5
+    task.wait(0.1) flashText.TextTransparency = 0
+    TweenService:Create(flashText, TweenInfo.new(0.8), {TextTransparency = 1}):Play()
+end)
+
+-- --- CLEANUP – DESTROYS EVERYTHING (NO LEFTOVERS) ---
+task.spawn(function()
+    task.wait(5.1)                       -- Wait for loading to finish
+    if animConnection then animConnection:Disconnect() end
+
+    -- Fade the whole background, then destroy the GUI completely
+    local fade = TweenService:Create(background, TweenInfo.new(0.5), {BackgroundTransparency = 1})
+    fade:Play()
+    fade.Completed:Connect(function()
+        loadingGui:Destroy()             -- This removes ALL children (stars, bar, text, etc.)
+    end)
+
+    -- Safety net: if the fade fails, force destroy after 6 seconds
+    task.delay(6, function()
+        if loadingGui and loadingGui.Parent then
+            loadingGui:Destroy()
+        end
+    end)
+end)
+
+-- --- 3. WAIT FOR LOADING TO FINISH BEFORE SHOWING UI ---
+task.wait(5.2)
+
+-- --- 4. BASE PLATFORM LOGIC (CONTROLLED BY TOGGLE) ---
+local PLATFORM_SIZE = 2000
+local spawn_Y = -1 
+local extendedFloor = nil
+local beams = {}
+local mainLoop = nil
+
+local function createPlatform()
+    local character = player.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        spawn_Y = hrp.Position.Y - 3.45
+    end
+
+    extendedFloor = Instance.new("Part", workspace)
+    extendedFloor.Name = "FollowingBaseplate_Managed"
+    extendedFloor.Size = Vector3.new(PLATFORM_SIZE, 1, PLATFORM_SIZE)
+    extendedFloor.Anchored = true
+    extendedFloor.CanCollide = true
+    extendedFloor.Transparency = 1 
+
+    beams = {}
+    local function createEdgeLine(pos1, pos2)
+        local att1 = Instance.new("Attachment", extendedFloor)
+        att1.Position = pos1
+        local att2 = Instance.new("Attachment", extendedFloor)
+        att2.Position = pos2
+        local beam = Instance.new("Beam", extendedFloor)
+        beam.Attachment0, beam.Attachment1 = att1, att2
+        beam.Width0, beam.Width1, beam.LightEmission, beam.FaceCamera = 1, 1, 1, true
+        table.insert(beams, beam)
+    end
+
+    local offset = PLATFORM_SIZE / 2
+    createEdgeLine(Vector3.new(-offset, 0.5, -offset), Vector3.new(offset, 0.5, -offset))
+    createEdgeLine(Vector3.new(offset, 0.5, -offset), Vector3.new(offset, 0.5, offset))
+    createEdgeLine(Vector3.new(offset, 0.5, offset), Vector3.new(-offset, 0.5, offset))
+    createEdgeLine(Vector3.new(-offset, 0.5, offset), Vector3.new(-offset, 0.5, -offset))
+
+    mainLoop = RunService.RenderStepped:Connect(function()
+        local currentHrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if currentHrp and extendedFloor then 
+            extendedFloor.Position = Vector3.new(currentHrp.Position.X, spawn_Y, currentHrp.Position.Z) 
+        end
+        local color = Color3.fromHSV((tick() * 0.05) % 1, 0.8, 1)
+        for _, beam in pairs(beams) do beam.Color = ColorSequence.new(color) end
+    end)
+end
+
+local function destroyPlatform()
+    if mainLoop then mainLoop:Disconnect() end
+    if extendedFloor then extendedFloor:Destroy() end
+    beams = {}
+end
+
+-- --- 5. ANTI-BANG INTEGRATION ---
+local boundKey = nil
+local isBinding = false
+local isRunning = false
+local inputConnection = nil
+local healthGuard = nil
+local deathConnection = nil
+local voidLoop = nil
+
+local function executeAntiBang()
+    if isRunning or isBinding then return end
+    isRunning = true
+
+    local character = player.Character
+    if not character then isRunning = false return end
+
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not rootPart or not humanoid then isRunning = false return end
+
+    local startCF = rootPart.CFrame
+    local startPos = startCF.Position
+
+    local guard
+    guard = RunService.PreRender:Connect(function()
+        if humanoid and humanoid.Parent then
+            humanoid.Health = humanoid.MaxHealth
+        else
+            guard:Disconnect()
+        end
+    end)
+    healthGuard = guard
+
+    deathConnection = humanoid.Died:Connect(function()
+        humanoid.Health = humanoid.MaxHealth
+        humanoid:LoadCharacter()
+    end)
+
+    rootPart.AssemblyLinearVelocity = Vector3.zero
+    rootPart.AssemblyAngularVelocity = Vector3.zero
+
+    local nullZonePos = Vector3.new(startPos.X, -300000, startPos.Z)
+
+    local duration = 1
+    local startTime = os.clock()
+    local running = true
+    local angleCounter = 0
+
+    voidLoop = task.spawn(function()
+        while running do
+            if os.clock() - startTime >= duration then
+                running = false
+                break
+            end
+            angleCounter = angleCounter + 180
+            local rot = CFrame.Angles(0, math.rad(angleCounter), 0)
+            rootPart.CFrame = CFrame.new(nullZonePos) * rot
+            rootPart.AssemblyLinearVelocity = Vector3.zero
+            rootPart.AssemblyAngularVelocity = Vector3.zero
+            task.wait()
+        end
+    end)
+
+    task.wait(duration)
+
+    running = false
+    if voidLoop then
+        task.cancel(voidLoop)
+        voidLoop = nil
+    end
+
+    rootPart.CFrame = startCF
+    rootPart.AssemblyLinearVelocity = Vector3.zero
+    rootPart.AssemblyAngularVelocity = Vector3.zero
+
+    if guard then
+        guard:Disconnect()
+        healthGuard = nil
+    end
+    if deathConnection then
+        deathConnection:Disconnect()
+        deathConnection = nil
+    end
+    humanoid.Health = humanoid.MaxHealth
+
+    isRunning = false
+end
+
+-- --- 6. UI (Exactly as your picture: Title + 3 buttons) ---
+local sg = Instance.new("ScreenGui", PlayerGui)
+sg.Name = "AntiBangUI"
+sg.ResetOnSpawn = false
+
+-- Main Frame
+local frame = Instance.new("Frame", sg)
+frame.Size = UDim2.new(0, 240, 0, 160)
+frame.Position = UDim2.new(0.5, -120, 0.5, -80)
+frame.BackgroundColor3 = Color3.fromRGB(28, 28, 33)
+frame.BorderSizePixel = 0
+frame.Draggable = true
+frame.Active = true
+
+local title = Instance.new("TextLabel", frame)
+title.Size = UDim2.new(1, 0, 0, 28)
+title.Position = UDim2.new(0, 0, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "Anti-Bang Hub"
+title.TextColor3 = Color3.fromRGB(220, 220, 220)
+title.TextScaled = true
+title.Font = Enum.Font.GothamBold
+
+local function createButton(text, yPos, color)
+    local btn = Instance.new("TextButton", frame)
+    btn.Size = UDim2.new(0.9, 0, 0, 30)
+    btn.Position = UDim2.new(0.05, 0, yPos, 0)
+    btn.BackgroundColor3 = color or Color3.fromRGB(50, 50, 60)
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Text = text
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 14
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+    return btn
+end
+
+-- Button 1: Antibang Keybind
+local bindBtn = createButton("Antibang Keybind [None]", 0.35)
+
+-- Button 2: Baseplate Toggle
+local baseplateBtn = createButton("Add Baseplate", 0.55, Color3.fromRGB(40, 80, 40))
+local baseplateActive = false
+
+-- Button 3: Destroy Script (smart double‑click + countdown)
+local destroyBtn = createButton("Destroy Script", 0.75, Color3.fromRGB(160, 30, 30))
+local confirmMode = false
+local countdownTask = nil
+
+-- --- 7. BUTTON LOGIC ---
+
+-- Antibang binding
+bindBtn.MouseButton1Click:Connect(function()
+    if isBinding then
+        isBinding = false
+        bindBtn.Text = "Antibang Keybind [" .. (boundKey and boundKey.Name or "None") .. "]"
+        return
+    end
+    isBinding = true
+    bindBtn.Text = "Press any key..."
+end)
+
+inputConnection = UIS.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if isBinding then
+        if input.KeyCode ~= Enum.KeyCode.Unknown then
+            boundKey = input.KeyCode
+            bindBtn.Text = "Antibang Keybind [" .. boundKey.Name .. "]"
+            isBinding = false
+        end
+        return
+    end
+    if boundKey and input.KeyCode == boundKey then
+        task.spawn(executeAntiBang)
+    end
+end)
+
+-- Baseplate Toggle
+baseplateBtn.MouseButton1Click:Connect(function()
+    if not baseplateActive then
+        createPlatform()
+        baseplateActive = true
+        baseplateBtn.Text = "Remove Baseplate"
+        baseplateBtn.BackgroundColor3 = Color3.fromRGB(80, 40, 40)
+    else
+        destroyPlatform()
+        baseplateActive = false
+        baseplateBtn.Text = "Add Baseplate"
+        baseplateBtn.BackgroundColor3 = Color3.fromRGB(40, 80, 40)
+    end
+end)
+
+-- Destroy Script (Smart Countdown)
+destroyBtn.MouseButton1Click:Connect(function()
+    if not confirmMode then
+        confirmMode = true
+        local countdown = 5
+        destroyBtn.Text = "Are you sure? (" .. countdown .. ")"
+        destroyBtn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
+
+        if countdownTask then
+            task.cancel(countdownTask)
+            countdownTask = nil
+        end
+
+        countdownTask = task.spawn(function()
+            while countdown > 0 do
+                task.wait(1)
+                countdown = countdown - 1
+                if not confirmMode then break end
+                destroyBtn.Text = "Are you sure? (" .. countdown .. ")"
+            end
+            if confirmMode then
+                confirmMode = false
+                destroyBtn.Text = "Destroy Script"
+                destroyBtn.BackgroundColor3 = Color3.fromRGB(160, 30, 30)
+            end
+            countdownTask = nil
+        end)
+
+    else
+        -- SECOND CLICK → DESTROY EVERYTHING
+        if countdownTask then
+            task.cancel(countdownTask)
+            countdownTask = nil
+        end
+        if inputConnection then inputConnection:Disconnect() end
+        if healthGuard then healthGuard:Disconnect() end
+        if deathConnection then deathConnection:Disconnect() end
+        if voidLoop then task.cancel(voidLoop) end
+        destroyPlatform()
+        sg:Destroy()
+        _G.KurtLoaded = false
+        StarterGui:SetCore("SendNotification", {Title = "KURT.WTF", Text = "Script Terminated.", Duration = 3})
+    end
+end)
+
+-- --- 8. STARTUP NOTIFICATION ---
+StarterGui:SetCore("SendNotification", {
+    Title = "KURT.WTF LOADED",
+    Text = "Platform toggle & anti‑bang ready. No character reset.",
+    Duration = 5
+})
