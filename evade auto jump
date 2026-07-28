@@ -5,6 +5,7 @@ local userInputService = game:GetService("UserInputService")
 local runService = game:GetService("RunService")
 local lighting = game:GetService("Lighting")
 local tweenService = game:GetService("TweenService")
+local teleportService = game:GetService("TeleportService")
 
 -- ===== CONFIGURATION =====
 local TAP_THRESHOLD = 0      -- Instant tap-jump
@@ -35,8 +36,6 @@ local function createLoadingScreen()
     image.Position = UDim2.new(0.5, 0, 0.38, 0)
     image.AnchorPoint = Vector2.new(0.5, 0.5)
     image.BackgroundTransparency = 1
-    
-    -- Uses Roblox Thumbnail API to guarantee the decal renders
     image.Image = "rbxthumb://type=Asset&id=9913176040&w=420&h=420"
     image.ScaleType = Enum.ScaleType.Fit
     image.Parent = bg
@@ -134,9 +133,10 @@ local removedItems = {}
 local darkModeOn = false
 local originalLighting = {}
 local darkLights = {}
-local overlayGui = nil
 local darkButtonRef = nil
 local fpsButtonRef = nil
+local rejoinButtonRef = nil
+local nebulaSky = nil
 
 local function isInsideCharacter(inst)
     local parent = inst
@@ -186,51 +186,7 @@ local function toggleTextureRemoval()
     end
 end
 
-local function createOverlay()
-    if overlayGui then return end
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "StarAuroraOverlay"
-    gui.ResetOnSpawn = false
-    gui.Parent = playerGui
-
-    local stars = Instance.new("ImageLabel")
-    stars.Size = UDim2.new(1, 0, 1, 0)
-    stars.Position = UDim2.new(0, 0, 0, 0)
-    stars.BackgroundTransparency = 1
-    stars.Image = "rbxthumb://type=Asset&id=213862428&w=420&h=420"
-    stars.ImageTransparency = 0.3
-    stars.ImageColor3 = Color3.fromRGB(255, 255, 255)
-    stars.Parent = gui
-
-    local aurora = Instance.new("ImageLabel")
-    aurora.Size = UDim2.new(1, 0, 1, 0)
-    aurora.Position = UDim2.new(0, 0, 0, 0)
-    aurora.BackgroundTransparency = 1
-    aurora.Image = "rbxthumb://type=Asset&id=160662430&w=420&h=420"
-    aurora.ImageTransparency = 0.5
-    aurora.ImageColor3 = Color3.fromRGB(200, 230, 255)
-    aurora.Parent = gui
-
-    local starRot = 0
-    local auroraRot = 0
-    runService.Heartbeat:Connect(function(dt)
-        if darkModeOn then
-            starRot = (starRot + dt * 0.2) % 360
-            auroraRot = (auroraRot + dt * 0.5) % 360
-            stars.Rotation = starRot
-            aurora.Rotation = auroraRot
-        end
-    end)
-
-    overlayGui = gui
-    gui.Enabled = false
-end
-
-local function showOverlay(show)
-    if not overlayGui then createOverlay() end
-    overlayGui.Enabled = show
-end
-
+-- Player PointLight Helper
 local function addLightToCharacter(char)
     if not char or not char:IsA("Model") then return end
     local root = char:FindFirstChild("HumanoidRootPart")
@@ -245,11 +201,10 @@ local function addLightToCharacter(char)
 
     local light = Instance.new("PointLight")
     light.Color = Color3.fromRGB(255, 255, 255)
-    light.Brightness = 1.2
-    light.Range = 18
+    light.Brightness = 2.5
+    light.Range = 35
     light.Shadows = false
     light.Parent = root
-    light.Position = Vector3.new(0, -3, 0)
 
     for _, plr in ipairs(game.Players:GetPlayers()) do
         if plr.Character == char then
@@ -266,20 +221,36 @@ local function removeAllLights()
     darkLights = {}
 end
 
+-- BRIGHTER DARK MODE WITH NEBULA SKYBOX
 local function applyNightTime()
     originalLighting = {
         Brightness = lighting.Brightness,
         Ambient = lighting.Ambient,
         OutdoorAmbient = lighting.OutdoorAmbient,
         ClockTime = lighting.ClockTime,
+        GlobalShadows = lighting.GlobalShadows,
     }
 
-    lighting.Brightness = 0.4
-    lighting.Ambient = Color3.fromRGB(38, 38, 51)
-    lighting.OutdoorAmbient = Color3.fromRGB(38, 38, 51)
-    lighting.ClockTime = 2
+    -- Significantly brighter values for optimal visibility
+    lighting.Brightness = 0.85
+    lighting.Ambient = Color3.fromRGB(120, 115, 140)
+    lighting.OutdoorAmbient = Color3.fromRGB(110, 105, 130)
+    lighting.ClockTime = 0
+    lighting.GlobalShadows = true
 
-    showOverlay(true)
+    if nebulaSky then nebulaSky:Destroy() end
+
+    -- Create 3D Nebula Skybox
+    nebulaSky = Instance.new("Sky")
+    nebulaSky.Name = "NebulaSky"
+    nebulaSky.SkyboxBk = "rbxassetid://159454299"
+    nebulaSky.SkyboxDn = "rbxassetid://159454296"
+    nebulaSky.SkyboxFt = "rbxassetid://159454293"
+    nebulaSky.SkyboxLf = "rbxassetid://159454286"
+    nebulaSky.SkyboxRt = "rbxassetid://159454300"
+    nebulaSky.SkyboxUp = "rbxassetid://159454288"
+    nebulaSky.StarCount = 3000
+    nebulaSky.Parent = lighting
 end
 
 local function restoreLighting()
@@ -287,9 +258,15 @@ local function restoreLighting()
     lighting.Ambient = originalLighting.Ambient or Color3.fromRGB(128, 128, 128)
     lighting.OutdoorAmbient = originalLighting.OutdoorAmbient or Color3.fromRGB(128, 128, 128)
     lighting.ClockTime = originalLighting.ClockTime or 14
+    if originalLighting.GlobalShadows ~= nil then
+        lighting.GlobalShadows = originalLighting.GlobalShadows
+    end
     originalLighting = {}
 
-    showOverlay(false)
+    if nebulaSky then
+        nebulaSky:Destroy()
+        nebulaSky = nil
+    end
 end
 
 local function toggleDarkMode()
@@ -307,6 +284,18 @@ local function toggleDarkMode()
 
     if darkButtonRef then
         darkButtonRef.BackgroundColor3 = darkModeOn and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+    end
+end
+
+-- Rejoin function to connect to the exact same server instance
+local function rejoinSameServer()
+    if rejoinButtonRef then
+        rejoinButtonRef.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+    end
+    if #game.Players:GetPlayers() <= 1 then
+        teleportService:Teleport(game.PlaceId, player)
+    else
+        teleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
     end
 end
 
@@ -356,6 +345,7 @@ local function createGUI()
     subLabel.TextStrokeTransparency = 0.3
     subLabel.Parent = gui
 
+    -- FPS Button
     fpsButtonRef = Instance.new("TextButton")
     fpsButtonRef.Size = UDim2.new(0, 60, 0, 25)
     fpsButtonRef.Position = UDim2.new(0.5, 90, 0, 10)
@@ -378,6 +368,7 @@ local function createGUI()
     fpsHint.TextStrokeTransparency = 0.3
     fpsHint.Parent = gui
 
+    -- Dark Button
     darkButtonRef = Instance.new("TextButton")
     darkButtonRef.Size = UDim2.new(0, 60, 0, 25)
     darkButtonRef.Position = UDim2.new(0.5, 90, 0, 40)
@@ -400,8 +391,32 @@ local function createGUI()
     darkHint.TextStrokeTransparency = 0.3
     darkHint.Parent = gui
 
+    -- Rejoin Button (Placed directly under Dark button)
+    rejoinButtonRef = Instance.new("TextButton")
+    rejoinButtonRef.Size = UDim2.new(0, 60, 0, 25)
+    rejoinButtonRef.Position = UDim2.new(0.5, 90, 0, 70)
+    rejoinButtonRef.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    rejoinButtonRef.TextColor3 = Color3.fromRGB(255, 255, 255)
+    rejoinButtonRef.TextScaled = true
+    rejoinButtonRef.Font = Enum.Font.GothamBold
+    rejoinButtonRef.Text = "Rejoin"
+    rejoinButtonRef.Parent = gui
+
+    local rejoinHint = Instance.new("TextLabel")
+    rejoinHint.Size = UDim2.new(0, 60, 0, 20)
+    rejoinHint.Position = UDim2.new(0.5, 155, 0, 72)
+    rejoinHint.BackgroundTransparency = 1
+    rejoinHint.Text = "click me"
+    rejoinHint.TextColor3 = Color3.fromRGB(204, 255, 204)
+    rejoinHint.TextSize = 12
+    rejoinHint.Font = Enum.Font.Gotham
+    rejoinHint.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    rejoinHint.TextStrokeTransparency = 0.3
+    rejoinHint.Parent = gui
+
     fpsButtonRef.MouseButton1Click:Connect(toggleTextureRemoval)
     darkButtonRef.MouseButton1Click:Connect(toggleDarkMode)
+    rejoinButtonRef.MouseButton1Click:Connect(rejoinSameServer)
 end
 
 createGUI()
