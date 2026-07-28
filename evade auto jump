@@ -6,7 +6,7 @@ local lighting = game:GetService("Lighting")
 
 -- ===== CONFIGURATION =====
 local TAP_THRESHOLD = 0.2
-local HOLD_DELAY = 0.2
+local HOLD_DELAY = 0
 -- =========================
 
 -- ---- Texture removal toggle ----
