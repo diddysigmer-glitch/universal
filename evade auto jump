@@ -1,27 +1,143 @@
--- Auto-Jump / Tap Jump (Pure Native Evade Jump)
+-- ===== SERVICES =====
 local player = game.Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 local userInputService = game:GetService("UserInputService")
 local runService = game:GetService("RunService")
 local lighting = game:GetService("Lighting")
+local tweenService = game:GetService("TweenService")
 
 -- ===== CONFIGURATION =====
-local TAP_THRESHOLD = 0.2
-local HOLD_DELAY = 0
--- =========================
+local TAP_THRESHOLD = 0      -- Instant tap-jump
+local HOLD_DELAY = 0         -- No hold delay
+local LOADING_DURATION = 2.5 -- Seconds for loading progress bar
 
--- ---- Texture removal toggle ----
+-- =========================================================
+-- 1. LOADING SCREEN WITH FLOPPA IMAGE & SMOOTH PROGRESS BAR
+-- =========================================================
+
+local function createLoadingScreen()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "LoadingScreen"
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = playerGui
+
+    -- Background
+    local bg = Instance.new("Frame")
+    bg.Size = UDim2.new(1, 0, 1, 0)
+    bg.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    bg.BackgroundTransparency = 0.15
+    bg.Parent = gui
+
+    -- Big Floppa Image Container
+    local image = Instance.new("ImageLabel")
+    image.Size = UDim2.new(0.35, 0, 0.35, 0)
+    image.Position = UDim2.new(0.5, 0, 0.38, 0)
+    image.AnchorPoint = Vector2.new(0.5, 0.5)
+    image.BackgroundTransparency = 1
+    
+    -- Uses Roblox Thumbnail API to guarantee the decal renders
+    image.Image = "rbxthumb://type=Asset&id=9913176040&w=420&h=420"
+    image.ScaleType = Enum.ScaleType.Fit
+    image.Parent = bg
+
+    local aspect = Instance.new("UIAspectRatioConstraint")
+    aspect.AspectRatio = 1
+    aspect.Parent = image
+
+    -- Progress Bar Background
+    local barBackground = Instance.new("Frame")
+    barBackground.Size = UDim2.new(0, 320, 0, 22)
+    barBackground.Position = UDim2.new(0.5, 0, 0.68, 0)
+    barBackground.AnchorPoint = Vector2.new(0.5, 0.5)
+    barBackground.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    barBackground.BorderSizePixel = 0
+    barBackground.Parent = bg
+
+    local barCorner = Instance.new("UICorner")
+    barCorner.CornerRadius = UDim.new(0, 8)
+    barCorner.Parent = barBackground
+
+    -- Progress Bar Fill Inner
+    local barFill = Instance.new("Frame")
+    barFill.Size = UDim2.new(0, 0, 1, 0)
+    barFill.BackgroundColor3 = Color3.fromRGB(0, 220, 120)
+    barFill.BorderSizePixel = 0
+    barFill.Parent = barBackground
+
+    local fillCorner = Instance.new("UICorner")
+    fillCorner.CornerRadius = UDim.new(0, 8)
+    fillCorner.Parent = barFill
+
+    -- Progress Percentage Text
+    local progressText = Instance.new("TextLabel")
+    progressText.Size = UDim2.new(0, 200, 0, 30)
+    progressText.Position = UDim2.new(0.5, 0, 0.76, 0)
+    progressText.AnchorPoint = Vector2.new(0.5, 0.5)
+    progressText.BackgroundTransparency = 1
+    progressText.Text = "Loading Floppa... 0%"
+    progressText.TextColor3 = Color3.fromRGB(255, 255, 255)
+    progressText.TextScaled = true
+    progressText.Font = Enum.Font.GothamBold
+    progressText.Parent = bg
+
+    -- Smooth Progress Animation
+    local tweenInfo = TweenInfo.new(LOADING_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local fillTween = tweenService:Create(barFill, tweenInfo, { Size = UDim2.new(1, 0, 1, 0) })
+    
+    fillTween:Play()
+
+    -- Update numerical percentage during progress
+    local startTime = tick()
+    local connection
+    connection = runService.RenderStepped:Connect(function()
+        local elapsed = tick() - startTime
+        local progress = math.clamp(elapsed / LOADING_DURATION, 0, 1)
+        progressText.Text = "Loading Floppa... " .. math.floor(progress * 100) .. "%"
+
+        if progress >= 1 then
+            connection:Disconnect()
+        end
+    end)
+
+    fillTween.Completed:Wait()
+    task.wait(0.2)
+
+    -- Fade Out Transition
+    local fadeTweenInfo = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+    local bgFade = tweenService:Create(bg, fadeTweenInfo, { BackgroundTransparency = 1 })
+    local textFade = tweenService:Create(progressText, fadeTweenInfo, { TextTransparency = 1 })
+    local imageFade = tweenService:Create(image, fadeTweenInfo, { ImageTransparency = 1 })
+    local barFade = tweenService:Create(barBackground, fadeTweenInfo, { BackgroundTransparency = 1 })
+    local fillFade = tweenService:Create(barFill, fadeTweenInfo, { BackgroundTransparency = 1 })
+
+    bgFade:Play()
+    textFade:Play()
+    imageFade:Play()
+    barFade:Play()
+    fillFade:Play()
+
+    bgFade.Completed:Wait()
+    gui:Destroy()
+end
+
+-- Display loading screen
+createLoadingScreen()
+
+-- =========================================================
+-- 2. MAIN SCRIPT FUNCTIONS & STATE
+-- =========================================================
+
 local textureRemovalOn = false
 local removedItems = {}
 
--- ---- Dark mode toggle ----
 local darkModeOn = false
 local originalLighting = {}
-local darkLights = {}          -- stores lights per player
-local overlayGui = nil         -- for stars + aurora
-local darkButtonRef = nil      -- reference for immediate update
-local fpsButtonRef = nil       -- reference for immediate update
+local darkLights = {}
+local overlayGui = nil
+local darkButtonRef = nil
+local fpsButtonRef = nil
 
--- ---- Helper: is inside a character? ----
 local function isInsideCharacter(inst)
     local parent = inst
     while parent do
@@ -31,7 +147,6 @@ local function isInsideCharacter(inst)
     return false
 end
 
--- ---- Texture removal ----
 local function toggleTextureRemoval()
     textureRemovalOn = not textureRemovalOn
     if textureRemovalOn then
@@ -66,42 +181,36 @@ local function toggleTextureRemoval()
         end
         removedItems = {}
     end
-    -- Update FPS button color immediately
     if fpsButtonRef then
-        fpsButtonRef.BackgroundColor3 = textureRemovalOn and Color3.new(0, 1, 0) or Color3.new(1, 0, 0)
+        fpsButtonRef.BackgroundColor3 = textureRemovalOn and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
     end
 end
 
--- ---- Private Star & Aurora Overlay (only you see it) ----
 local function createOverlay()
     if overlayGui then return end
-
     local gui = Instance.new("ScreenGui")
     gui.Name = "StarAuroraOverlay"
     gui.ResetOnSpawn = false
-    gui.Parent = player.PlayerGui
+    gui.Parent = playerGui
 
-    -- Stars (background)
     local stars = Instance.new("ImageLabel")
     stars.Size = UDim2.new(1, 0, 1, 0)
     stars.Position = UDim2.new(0, 0, 0, 0)
     stars.BackgroundTransparency = 1
-    stars.Image = "rbxassetid://213862428"   -- starfield
+    stars.Image = "rbxthumb://type=Asset&id=213862428&w=420&h=420"
     stars.ImageTransparency = 0.3
-    stars.ImageColor3 = Color3.new(1, 1, 1)
+    stars.ImageColor3 = Color3.fromRGB(255, 255, 255)
     stars.Parent = gui
 
-    -- Aurora (foreground)
     local aurora = Instance.new("ImageLabel")
     aurora.Size = UDim2.new(1, 0, 1, 0)
     aurora.Position = UDim2.new(0, 0, 0, 0)
     aurora.BackgroundTransparency = 1
-    aurora.Image = "rbxassetid://160662430"  -- transparent aurora
+    aurora.Image = "rbxthumb://type=Asset&id=160662430&w=420&h=420"
     aurora.ImageTransparency = 0.5
-    aurora.ImageColor3 = Color3.new(0.8, 0.9, 1)
+    aurora.ImageColor3 = Color3.fromRGB(200, 230, 255)
     aurora.Parent = gui
 
-    -- Gentle rotation
     local starRot = 0
     local auroraRot = 0
     runService.Heartbeat:Connect(function(dt)
@@ -122,29 +231,26 @@ local function showOverlay(show)
     overlayGui.Enabled = show
 end
 
--- ---- Light under ALL players (visible to everyone) ----
 local function addLightToCharacter(char)
     if not char or not char:IsA("Model") then return end
     local root = char:FindFirstChild("HumanoidRootPart")
     if not root then return end
 
-    -- Remove any existing light for this character
-    for player, light in pairs(darkLights) do
+    for plr, light in pairs(darkLights) do
         if light and light.Parent == root then
             light:Destroy()
-            darkLights[player] = nil
+            darkLights[plr] = nil
         end
     end
 
     local light = Instance.new("PointLight")
-    light.Color = Color3.new(1, 1, 1)
+    light.Color = Color3.fromRGB(255, 255, 255)
     light.Brightness = 1.2
     light.Range = 18
     light.Shadows = false
     light.Parent = root
     light.Position = Vector3.new(0, -3, 0)
 
-    -- Store reference by player
     for _, plr in ipairs(game.Players:GetPlayers()) do
         if plr.Character == char then
             darkLights[plr] = light
@@ -154,13 +260,12 @@ local function addLightToCharacter(char)
 end
 
 local function removeAllLights()
-    for player, light in pairs(darkLights) do
+    for _, light in pairs(darkLights) do
         if light then light:Destroy() end
     end
     darkLights = {}
 end
 
--- ---- Dark mode (less dark now) ----
 local function applyNightTime()
     originalLighting = {
         Brightness = lighting.Brightness,
@@ -169,10 +274,9 @@ local function applyNightTime()
         ClockTime = lighting.ClockTime,
     }
 
-    -- Increased brightness for less dark
-    lighting.Brightness = 0.4          -- was 0.3
-    lighting.Ambient = Color3.new(0.15, 0.15, 0.2)   -- slightly brighter
-    lighting.OutdoorAmbient = Color3.new(0.15, 0.15, 0.2)
+    lighting.Brightness = 0.4
+    lighting.Ambient = Color3.fromRGB(38, 38, 51)
+    lighting.OutdoorAmbient = Color3.fromRGB(38, 38, 51)
     lighting.ClockTime = 2
 
     showOverlay(true)
@@ -180,8 +284,8 @@ end
 
 local function restoreLighting()
     lighting.Brightness = originalLighting.Brightness or 1
-    lighting.Ambient = originalLighting.Ambient or Color3.new(0.5, 0.5, 0.5)
-    lighting.OutdoorAmbient = originalLighting.OutdoorAmbient or Color3.new(0.5, 0.5, 0.5)
+    lighting.Ambient = originalLighting.Ambient or Color3.fromRGB(128, 128, 128)
+    lighting.OutdoorAmbient = originalLighting.OutdoorAmbient or Color3.fromRGB(128, 128, 128)
     lighting.ClockTime = originalLighting.ClockTime or 14
     originalLighting = {}
 
@@ -193,7 +297,6 @@ local function toggleDarkMode()
 
     if darkModeOn then
         applyNightTime()
-        -- Add light to ALL existing characters
         for _, plr in ipairs(game.Players:GetPlayers()) do
             if plr.Character then addLightToCharacter(plr.Character) end
         end
@@ -202,117 +305,111 @@ local function toggleDarkMode()
         removeAllLights()
     end
 
-    -- Update Dark button color immediately
     if darkButtonRef then
-        darkButtonRef.BackgroundColor3 = darkModeOn and Color3.new(0, 1, 0) or Color3.new(1, 0, 0)
+        darkButtonRef.BackgroundColor3 = darkModeOn and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
     end
 end
 
--- Handle new players / respawns
 local function onPlayerAdded(plr)
     plr.CharacterAdded:Connect(function(char)
         if darkModeOn then addLightToCharacter(char) end
     end)
 end
+
 for _, plr in ipairs(game.Players:GetPlayers()) do onPlayerAdded(plr) end
 game.Players.PlayerAdded:Connect(onPlayerAdded)
 
--- ---- GUI ----
+-- =========================================================
+-- 3. MAIN UI CREATION
+-- =========================================================
+
 local function createGUI()
-    local oldGui = player.PlayerGui:FindFirstChild("AutoJumpNotification")
+    local oldGui = playerGui:FindFirstChild("AutoJumpNotification")
     if oldGui then oldGui:Destroy() end
 
     local gui = Instance.new("ScreenGui")
     gui.Name = "AutoJumpNotification"
     gui.ResetOnSpawn = false
-    gui.Parent = player.PlayerGui
+    gui.Parent = playerGui
 
-    -- Main label
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(0, 160, 0, 36)
     label.Position = UDim2.new(0.5, -80, 0, 10)
     label.BackgroundTransparency = 1
     label.Text = "Script Active"
-    label.TextColor3 = Color3.new(0.8, 1, 0.8)
+    label.TextColor3 = Color3.fromRGB(204, 255, 204)
     label.TextScaled = true
     label.Font = Enum.Font.GothamBold
-    label.TextStrokeColor3 = Color3.new(0, 0, 0)
+    label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     label.TextStrokeTransparency = 0.4
     label.Parent = gui
 
-    -- Subtitle
     local subLabel = Instance.new("TextLabel")
     subLabel.Size = UDim2.new(0, 160, 0, 18)
-    subLabel.Position = UDim2.new(0.5, -80, 0, 70)
+    subLabel.Position = UDim2.new(0.5, -80, 0, 46)
     subLabel.BackgroundTransparency = 1
     subLabel.Text = "hold space for auto"
-    subLabel.TextColor3 = Color3.new(0.7, 0.9, 0.7)
+    subLabel.TextColor3 = Color3.fromRGB(178, 230, 178)
     subLabel.TextSize = 14
     subLabel.Font = Enum.Font.Gotham
-    subLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+    subLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     subLabel.TextStrokeTransparency = 0.3
     subLabel.Parent = gui
 
-    -- FPS button
     fpsButtonRef = Instance.new("TextButton")
     fpsButtonRef.Size = UDim2.new(0, 60, 0, 25)
     fpsButtonRef.Position = UDim2.new(0.5, 90, 0, 10)
-    fpsButtonRef.BackgroundColor3 = Color3.new(1, 0, 0)
-    fpsButtonRef.TextColor3 = Color3.new(1, 1, 1)
+    fpsButtonRef.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    fpsButtonRef.TextColor3 = Color3.fromRGB(255, 255, 255)
     fpsButtonRef.TextScaled = true
     fpsButtonRef.Font = Enum.Font.GothamBold
     fpsButtonRef.Text = "FPS"
     fpsButtonRef.Parent = gui
 
-    -- "click me" hint (right of FPS)
     local fpsHint = Instance.new("TextLabel")
     fpsHint.Size = UDim2.new(0, 60, 0, 20)
     fpsHint.Position = UDim2.new(0.5, 155, 0, 12)
     fpsHint.BackgroundTransparency = 1
     fpsHint.Text = "click me"
-    fpsHint.TextColor3 = Color3.new(0.8, 1, 0.8)
+    fpsHint.TextColor3 = Color3.fromRGB(204, 255, 204)
     fpsHint.TextSize = 12
     fpsHint.Font = Enum.Font.Gotham
-    fpsHint.TextStrokeColor3 = Color3.new(0, 0, 0)
+    fpsHint.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     fpsHint.TextStrokeTransparency = 0.3
     fpsHint.Parent = gui
 
-    -- Dark button
     darkButtonRef = Instance.new("TextButton")
     darkButtonRef.Size = UDim2.new(0, 60, 0, 25)
     darkButtonRef.Position = UDim2.new(0.5, 90, 0, 40)
-    darkButtonRef.BackgroundColor3 = Color3.new(1, 0, 0)
-    darkButtonRef.TextColor3 = Color3.new(1, 1, 1)
+    darkButtonRef.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    darkButtonRef.TextColor3 = Color3.fromRGB(255, 255, 255)
     darkButtonRef.TextScaled = true
     darkButtonRef.Font = Enum.Font.GothamBold
     darkButtonRef.Text = "Dark"
     darkButtonRef.Parent = gui
 
-    -- "click me" hint (right of Dark)
     local darkHint = Instance.new("TextLabel")
     darkHint.Size = UDim2.new(0, 60, 0, 20)
     darkHint.Position = UDim2.new(0.5, 155, 0, 42)
     darkHint.BackgroundTransparency = 1
     darkHint.Text = "click me"
-    darkHint.TextColor3 = Color3.new(0.8, 1, 0.8)
+    darkHint.TextColor3 = Color3.fromRGB(204, 255, 204)
     darkHint.TextSize = 12
     darkHint.Font = Enum.Font.Gotham
-    darkHint.TextStrokeColor3 = Color3.new(0, 0, 0)
+    darkHint.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     darkHint.TextStrokeTransparency = 0.3
     darkHint.Parent = gui
 
-    -- Click events directly call toggle functions (which update button colors)
-    fpsButtonRef.MouseButton1Click:Connect(function()
-        toggleTextureRemoval()
-    end)
-
-    darkButtonRef.MouseButton1Click:Connect(function()
-        toggleDarkMode()
-    end)
+    fpsButtonRef.MouseButton1Click:Connect(toggleTextureRemoval)
+    darkButtonRef.MouseButton1Click:Connect(toggleDarkMode)
 end
+
 createGUI()
 
--- ---- Auto‑Jump Logic ----
+-- =========================================================
+-- 4. AUTO-JUMP MECHANICS
+-- =========================================================
+
 local isSpaceHeld = false
 local spacePressTime = 0
 local character = nil
