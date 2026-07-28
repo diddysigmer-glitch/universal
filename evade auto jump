@@ -132,11 +132,12 @@ local removedItems = {}
 
 local darkModeOn = false
 local originalLighting = {}
+local originalAtmosphereParents = {}
 local darkLights = {}
 local darkButtonRef = nil
 local fpsButtonRef = nil
 local rejoinButtonRef = nil
-local nebulaSky = nil
+local starrySky = nil
 
 local function isInsideCharacter(inst)
     local parent = inst
@@ -201,8 +202,8 @@ local function addLightToCharacter(char)
 
     local light = Instance.new("PointLight")
     light.Color = Color3.fromRGB(255, 255, 255)
-    light.Brightness = 2.5
-    light.Range = 35
+    light.Brightness = 2.0
+    light.Range = 30
     light.Shadows = false
     light.Parent = root
 
@@ -221,7 +222,7 @@ local function removeAllLights()
     darkLights = {}
 end
 
--- BRIGHTER DARK MODE WITH NEBULA SKYBOX
+-- DARK MODE WITH STARRY SKY
 local function applyNightTime()
     originalLighting = {
         Brightness = lighting.Brightness,
@@ -229,28 +230,44 @@ local function applyNightTime()
         OutdoorAmbient = lighting.OutdoorAmbient,
         ClockTime = lighting.ClockTime,
         GlobalShadows = lighting.GlobalShadows,
+        FogEnd = lighting.FogEnd,
+        FogStart = lighting.FogStart,
     }
 
-    -- Significantly brighter values for optimal visibility
-    lighting.Brightness = 0.85
-    lighting.Ambient = Color3.fromRGB(120, 115, 140)
-    lighting.OutdoorAmbient = Color3.fromRGB(110, 105, 130)
-    lighting.ClockTime = 0
+    -- Balanced dark lighting (visible ground, dark aesthetic)
+    lighting.Brightness = 0.35
+    lighting.Ambient = Color3.fromRGB(55, 50, 75)
+    lighting.OutdoorAmbient = Color3.fromRGB(45, 40, 65)
+    lighting.ClockTime = 0 -- Midnight
     lighting.GlobalShadows = true
 
-    if nebulaSky then nebulaSky:Destroy() end
+    -- Remove map fog
+    lighting.FogStart = 1000000
+    lighting.FogEnd = 10000000
 
-    -- Create 3D Nebula Skybox
-    nebulaSky = Instance.new("Sky")
-    nebulaSky.Name = "NebulaSky"
-    nebulaSky.SkyboxBk = "rbxassetid://159454299"
-    nebulaSky.SkyboxDn = "rbxassetid://159454296"
-    nebulaSky.SkyboxFt = "rbxassetid://159454293"
-    nebulaSky.SkyboxLf = "rbxassetid://159454286"
-    nebulaSky.SkyboxRt = "rbxassetid://159454300"
-    nebulaSky.SkyboxUp = "rbxassetid://159454288"
-    nebulaSky.StarCount = 3000
-    nebulaSky.Parent = lighting
+    -- Temporarily disable atmospheres
+    originalAtmosphereParents = {}
+    for _, child in ipairs(lighting:GetChildren()) do
+        if child:IsA("Atmosphere") then
+            table.insert(originalAtmosphereParents, { object = child, parent = child.Parent })
+            child.Parent = nil
+        end
+    end
+
+    if starrySky then starrySky:Destroy() end
+
+    -- Custom Starry Skybox
+    starrySky = Instance.new("Sky")
+    starrySky.Name = "CustomStarrySky"
+    starrySky.SkyboxBk = "rbxassetid://60348217"
+    starrySky.SkyboxDn = "rbxassetid://60348217"
+    starrySky.SkyboxFt = "rbxassetid://60348217"
+    starrySky.SkyboxLf = "rbxassetid://60348217"
+    starrySky.SkyboxRt = "rbxassetid://60348217"
+    starrySky.SkyboxUp = "rbxassetid://60348217"
+    starrySky.StarCount = 5000
+    starrySky.CelestialBodiesShown = true
+    starrySky.Parent = lighting
 end
 
 local function restoreLighting()
@@ -258,14 +275,25 @@ local function restoreLighting()
     lighting.Ambient = originalLighting.Ambient or Color3.fromRGB(128, 128, 128)
     lighting.OutdoorAmbient = originalLighting.OutdoorAmbient or Color3.fromRGB(128, 128, 128)
     lighting.ClockTime = originalLighting.ClockTime or 14
+    lighting.FogEnd = originalLighting.FogEnd or 100000
+    lighting.FogStart = originalLighting.FogStart or 0
+
     if originalLighting.GlobalShadows ~= nil then
         lighting.GlobalShadows = originalLighting.GlobalShadows
     end
     originalLighting = {}
 
-    if nebulaSky then
-        nebulaSky:Destroy()
-        nebulaSky = nil
+    -- Restore Atmosphere objects
+    for _, data in ipairs(originalAtmosphereParents) do
+        if data.object then
+            data.object.Parent = data.parent or lighting
+        end
+    end
+    originalAtmosphereParents = {}
+
+    if starrySky then
+        starrySky:Destroy()
+        starrySky = nil
     end
 end
 
@@ -287,7 +315,7 @@ local function toggleDarkMode()
     end
 end
 
--- Rejoin function to connect to the exact same server instance
+-- Rejoin function
 local function rejoinSameServer()
     if rejoinButtonRef then
         rejoinButtonRef.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
@@ -391,7 +419,7 @@ local function createGUI()
     darkHint.TextStrokeTransparency = 0.3
     darkHint.Parent = gui
 
-    -- Rejoin Button (Placed directly under Dark button)
+    -- Rejoin Button
     rejoinButtonRef = Instance.new("TextButton")
     rejoinButtonRef.Size = UDim2.new(0, 60, 0, 25)
     rejoinButtonRef.Position = UDim2.new(0.5, 90, 0, 70)
