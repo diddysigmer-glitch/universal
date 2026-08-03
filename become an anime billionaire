@@ -1,0 +1,237 @@
+--[[
+  INITIAL DELAY (10s) → WALK (3s) → HOLD R (2s) → TOGGLE AFK ROLL → STUCK DETECTION
+]]
+
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer or Players.PlayerAdded:Wait()
+if not player then repeat task.wait() until Players.LocalPlayer player = Players.LocalPlayer end
+
+local VIM = game:GetService("VirtualInputManager")
+local RunService = game:GetService("RunService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+local humanoid = character:WaitForChild("Humanoid")
+
+local hasTriggered = false
+local stuckTimer = 0
+local lastPos = humanoidRootPart.Position
+local defaultWalkSpeed = humanoid.WalkSpeed
+
+-- ------------------------------------------------------------
+-- 1. HELPER: FIRE PROXIMITY PROMPTS OR HOLD KEY
+-- ------------------------------------------------------------
+local function triggerProximityPrompt(prompt)
+    if not prompt then return end
+    
+    -- Executor built-in bypass (instant trigger)
+    if fireproximityprompt then
+        fireproximityprompt(prompt)
+        return
+    end
+
+    -- Game engine fallback (hold sequence)
+    if prompt:IsA("ProximityPrompt") then
+        pcall(function()
+            prompt:InputHoldBegin()
+            task.wait(prompt.HoldDuration > 0 and prompt.HoldDuration or 0.1)
+            prompt:InputHoldEnd()
+        end)
+    end
+end
+
+-- Listen automatically whenever a ProximityPrompt appears near player
+ProximityPromptService.PromptShown:Connect(function(prompt)
+    if prompt.KeyboardKeyCode == Enum.KeyCode.R or string.find(string.lower(prompt.ActionText or ""), "auto roll") then
+        print("[⚡] 'R' ProximityPrompt detected! Activating...")
+        triggerProximityPrompt(prompt)
+    end
+end)
+
+-- ------------------------------------------------------------
+-- 2. FIND & TOGGLE AFK ROLL (ON)
+-- ------------------------------------------------------------
+local function toggleAFKRollOn()
+    local playerGui = player:FindFirstChild("PlayerGui")
+    if not playerGui then return false end
+
+    for _, obj in ipairs(playerGui:GetDescendants()) do
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+            local text = string.lower(obj.Text or "")
+            
+            -- Search specifically for "AFK Roll" section
+            if string.find(text, "afk roll") then
+                local rowContainer = obj.Parent
+                if rowContainer then
+                    -- Search inside container for the OFF/ON toggle button
+                    for _, child in ipairs(rowContainer:GetDescendants()) do
+                        if child:IsA("GuiButton") or (child:IsA("TextLabel") and string.find(string.lower(child.Text or ""), "off")) then
+                            
+                            local clickable = child:IsA("GuiButton") and child or child:FindFirstAncestorOfClass("GuiButton")
+                            
+                            -- Fire button click connections
+                            if clickable and getconnections then
+                                for _, conn in ipairs(getconnections(clickable.MouseButton1Click)) do
+                                    conn:Fire()
+                                end
+                                for _, conn in ipairs(getconnections(clickable.Activated)) do
+                                    conn:Fire()
+                                end
+                            end
+
+                            -- Screen click simulation via VirtualInputManager
+                            local absPos = child.AbsolutePosition
+                            local absSize = child.AbsoluteSize
+                            if absPos and absSize then
+                                local centerX = absPos.X + (absSize.X / 2)
+                                local centerY = absPos.Y + (absSize.Y / 2) + 36
+                                
+                                VIM:SendMouseMoveEvent(centerX, centerY, 0)
+                                task.wait(0.05)
+                                VIM:SendMouseButtonEvent(centerX, centerY, 0, true)
+                                task.wait(0.05)
+                                VIM:SendMouseButtonEvent(centerX, centerY, 0, false)
+                            end
+
+                            print("[✓] Successfully triggered AFK Roll toggle.")
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- ------------------------------------------------------------
+-- 3. HOLD R KEY SIMULATION
+-- ------------------------------------------------------------
+local function holdRKey(duration)
+    duration = duration or 2
+    print("[⏳] Holding R key for " .. duration .. "s...")
+    
+    pcall(function()
+        VIM:SendKeyEvent(true, Enum.KeyCode.R, false, game)
+    end)
+    
+    task.wait(duration)
+    
+    pcall(function()
+        VIM:SendKeyEvent(false, Enum.KeyCode.R, false, game)
+    end)
+    print("[✓] Released R key.")
+end
+
+-- ------------------------------------------------------------
+-- 4. MOVEMENT & RE-RESCUE SEQUENCE
+-- ------------------------------------------------------------
+local function walkForward()
+    if not humanoidRootPart or not humanoid or hasTriggered then return end
+    local forwardDir = humanoidRootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
+    local target = humanoidRootPart.Position + forwardDir.Unit * 500
+    humanoid:MoveTo(target)
+    print("[🚶] Auto-walking forward...")
+end
+
+local function triggerSequence()
+    if hasTriggered then return end
+    hasTriggered = true
+    print("[🎯] Stuck detected! Stopping character and running sequence...")
+
+    humanoid.WalkSpeed = 0
+    humanoid:MoveTo(humanoidRootPart.Position)
+    task.wait(0.2)
+
+    holdRKey(2)
+    task.wait(0.3)
+
+    toggleAFKRollOn()
+
+    task.delay(3, function()
+        humanoid.WalkSpeed = defaultWalkSpeed > 0 and defaultWalkSpeed or 16
+        hasTriggered = false
+        stuckTimer = 0
+        print("[🔄] Sequence completed. Resuming walking...")
+        walkForward()
+    end)
+end
+
+-- ------------------------------------------------------------
+-- 5. STUCK DETECTION
+-- ------------------------------------------------------------
+local isStuckDetectionActive = false
+
+local function startStuckDetection()
+    if isStuckDetectionActive then return end
+    isStuckDetectionActive = true
+
+    RunService.Heartbeat:Connect(function(deltaTime)
+        if hasTriggered then return end
+        if not humanoidRootPart or not humanoid then return end
+
+        local currentPos = humanoidRootPart.Position
+        local distanceMoved = (currentPos - lastPos).Magnitude
+        lastPos = currentPos
+
+        local velocity = humanoidRootPart.AssemblyLinearVelocity
+        local horizontalSpeed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
+        local isMoving = humanoid.MoveDirection.Magnitude > 0.1
+
+        if isMoving and horizontalSpeed < 0.5 and distanceMoved < 0.05 then
+            stuckTimer = stuckTimer + deltaTime
+            if stuckTimer >= 0.5 then
+                triggerSequence()
+            end
+        else
+            stuckTimer = math.max(0, stuckTimer - deltaTime)
+        end
+    end)
+end
+
+-- ------------------------------------------------------------
+-- 6. STARTUP TIMED WORKFLOW
+-- ------------------------------------------------------------
+local function startTimedWorkflow()
+    print("[⏳] Waiting 10 seconds before starting script...")
+    task.wait(10)
+    
+    -- 1. Walk forward
+    walkForward()
+    
+    -- 2. Walk for 3 seconds
+    task.wait(3)
+    
+    -- Stop movement briefly to press R accurately
+    humanoid.WalkSpeed = 0
+    humanoid:MoveTo(humanoidRootPart.Position)
+    task.wait(0.2)
+    
+    -- 3. Hold R key for 2 seconds
+    holdRKey(2)
+    task.wait(0.3)
+    
+    -- 4. Toggle AFK roll
+    toggleAFKRollOn()
+    
+    -- 5. Restore walk speed, walk forward, and enable stuck detection
+    humanoid.WalkSpeed = defaultWalkSpeed > 0 and defaultWalkSpeed or 16
+    walkForward()
+    startStuckDetection()
+end
+
+task.spawn(startTimedWorkflow)
+
+player.CharacterAdded:Connect(function(newChar)
+    character = newChar
+    humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+    humanoid = character:WaitForChild("Humanoid")
+    defaultWalkSpeed = humanoid.WalkSpeed
+    hasTriggered = false
+    stuckTimer = 0
+    lastPos = humanoidRootPart.Position
+    task.spawn(startTimedWorkflow)
+end)
+
+print("[✅] Enhanced script loaded.")
