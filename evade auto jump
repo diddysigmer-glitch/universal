@@ -6,6 +6,7 @@ local runService = game:GetService("RunService")
 local lighting = game:GetService("Lighting")
 local tweenService = game:GetService("TweenService")
 local teleportService = game:GetService("TeleportService")
+local soundService = game:GetService("SoundService")
 
 -- ===== CONFIGURATION =====
 local TAP_THRESHOLD = 0      -- Instant tap-jump
@@ -21,6 +22,7 @@ local function createLoadingScreen()
     gui.Name = "LoadingScreen"
     gui.ResetOnSpawn = false
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.DisplayOrder = 999999
     gui.Parent = playerGui
 
     -- Background
@@ -86,7 +88,6 @@ local function createLoadingScreen()
     
     fillTween:Play()
 
-    -- Update numerical percentage during progress
     local startTime = tick()
     local connection
     connection = runService.RenderStepped:Connect(function()
@@ -120,7 +121,6 @@ local function createLoadingScreen()
     gui:Destroy()
 end
 
--- Display loading screen
 createLoadingScreen()
 
 -- =========================================================
@@ -131,189 +131,515 @@ local textureRemovalOn = false
 local removedItems = {}
 
 local darkModeOn = false
-local originalLighting = {}
-local originalAtmosphereParents = {}
-local darkLights = {}
+local isUpdatingLighting = false
+local defaultMapLighting = {}
+local hiddenMapLightingObjects = {}
+local nextbotGlows = {}
+
+local lanternToggleOn = false
+local persistentLanternLights = {}
+local spinningFloppaImage = nil
+local spinConnection = nil
+
 local darkButtonRef = nil
 local fpsButtonRef = nil
 local rejoinButtonRef = nil
+local destroyButtonRef = nil
+local lanternButtonRef = nil
 local starrySky = nil
+local customAtmosphere = nil
+local mainGuiRef = nil
+local shootingStarGui = nil
+local shootingStarTask = nil
 
-local function isInsideCharacter(inst)
-    local parent = inst
-    while parent do
-        if parent:IsA("Model") and parent:FindFirstChild("Humanoid") then return true end
-        parent = parent.Parent
+local connections = {}
+
+defaultMapLighting = {
+    Brightness = lighting.Brightness,
+    Ambient = lighting.Ambient,
+    OutdoorAmbient = lighting.OutdoorAmbient,
+    ClockTime = lighting.ClockTime,
+    GlobalShadows = lighting.GlobalShadows,
+    FogEnd = lighting.FogEnd,
+    FogStart = lighting.FogStart,
+    FogColor = lighting.FogColor,
+    ExposureCompensation = lighting.ExposureCompensation,
+    Technology = lighting.Technology
+}
+
+-- FILTER PROTECTED OBJECTS (PLAYERS, DEPLOYABLES, EMOTES)
+local function isProtectedObject(obj)
+    local cur = obj
+    while cur and cur ~= workspace do
+        -- Protect player characters entirely
+        if cur:IsA("Model") and (game.Players:GetPlayerFromCharacter(cur) or cur:FindFirstChildOfClass("Humanoid")) then
+            if not cur.Name:lower():find("nextbot") and not cur.Name:lower():find("bot") then
+                return true
+            end
+        end
+
+        local name = cur.Name:lower()
+        if name:find("placed") or name:find("deploy") or name:find("utility") 
+           or name:find("item") or name:find("emote") or name:find("prop") 
+           or name:find("structure") or name:find("barricade") or name:find("sensor") then
+            return true
+        end
+        cur = cur.Parent
     end
     return false
 end
 
-local function toggleTextureRemoval()
-    textureRemovalOn = not textureRemovalOn
+-- PROCESS A SINGLE MAP PART FOR FPS OPTIMIZER
+local function processPartForFPS(obj)
+    if isProtectedObject(obj) then return end
+
+    if obj:IsA("Decal") or obj:IsA("Texture") then
+        table.insert(removedItems, {
+            type = "Texture",
+            parent = obj.Parent,
+            texture = obj.Texture,
+            className = obj.ClassName,
+            face = obj:IsA("Decal") and obj.Face or nil,
+        })
+        obj:Destroy()
+
+    elseif obj:IsA("BasePart") and not obj.CanCollide then
+        local name = obj.Name:lower()
+        local parentName = obj.Parent and obj.Parent.Name:lower() or ""
+
+        local isBarrier = name:find("door") or name:find("wall") or name:find("frame") 
+                       or name:find("glass") or name:find("window") or name:find("arch")
+                       or name:find("barrier") or name:find("rail") or name:find("fence")
+                       or parentName:find("door") or parentName:find("window")
+
+        local isTriggerZone = name:find("zone") or name:find("trigger") or name:find("spawn")
+                           or name:find("area") or name:find("hitbox") or name:find("node")
+                           or name:find("part") or name:find("box")
+
+        if isTriggerZone or obj.Transparency > 0.5 then
+            table.insert(removedItems, {
+                type = "Part",
+                instance = obj,
+                originalTransparency = obj.Transparency
+            })
+            obj.Transparency = 1
+
+        elseif isBarrier then
+            table.insert(removedItems, {
+                type = "Part",
+                instance = obj,
+                originalTransparency = obj.Transparency
+            })
+            obj.Transparency = math.clamp(obj.Transparency, 0, 0.3)
+        else
+            table.insert(removedItems, {
+                type = "Part",
+                instance = obj,
+                originalTransparency = obj.Transparency
+            })
+            obj.Transparency = 1
+        end
+    end
+end
+
+-- FPS OPTIMIZER TOGGLE
+local function toggleTextureRemoval(forceState)
+    if forceState ~= nil then
+        textureRemovalOn = forceState
+    else
+        textureRemovalOn = not textureRemovalOn
+    end
+
     if textureRemovalOn then
         removedItems = {}
         for _, obj in ipairs(workspace:GetDescendants()) do
-            if (obj:IsA("Decal") or obj:IsA("Texture")) and not isInsideCharacter(obj) then
-                table.insert(removedItems, {
-                    parent = obj.Parent,
-                    texture = obj.Texture,
-                    className = obj.ClassName,
-                    face = obj:IsA("Decal") and obj.Face or nil,
-                })
-                obj:Destroy()
-            end
+            processPartForFPS(obj)
         end
     else
         for _, data in ipairs(removedItems) do
-            local parent = data.parent
-            if parent and parent:IsA("BasePart") then
-                local newObj
-                if data.className == "Decal" then
-                    newObj = Instance.new("Decal")
-                    if data.face then newObj.Face = data.face end
-                elseif data.className == "Texture" then
-                    newObj = Instance.new("Texture")
+            if data.type == "Texture" then
+                local parent = data.parent
+                if parent and parent:IsA("BasePart") then
+                    local newObj
+                    if data.className == "Decal" then
+                        newObj = Instance.new("Decal")
+                        if data.face then newObj.Face = data.face end
+                    elseif data.className == "Texture" then
+                        newObj = Instance.new("Texture")
+                    end
+                    if newObj then
+                        newObj.Texture = data.texture
+                        newObj.Parent = parent
+                    end
                 end
-                if newObj then
-                    newObj.Texture = data.texture
-                    newObj.Parent = parent
+            elseif data.type == "Part" then
+                if data.instance and data.instance.Parent then
+                    data.instance.Transparency = data.originalTransparency
                 end
             end
         end
+
         removedItems = {}
     end
+
     if fpsButtonRef then
         fpsButtonRef.BackgroundColor3 = textureRemovalOn and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
     end
 end
 
--- Player PointLight Helper
-local function addLightToCharacter(char)
-    if not char or not char:IsA("Model") then return end
+-- LANTERN / PERSISTENT LIGHT LOGIC
+local function removePersistentLanternLights()
+    for _, lightObj in ipairs(persistentLanternLights) do
+        if lightObj and lightObj.Parent then
+            lightObj:Destroy()
+        end
+    end
+    persistentLanternLights = {}
+end
+
+local function captureAndPersistLanternLight(char)
+    if not char or not lanternToggleOn then return end
     local root = char:FindFirstChild("HumanoidRootPart")
     if not root then return end
 
-    for plr, light in pairs(darkLights) do
-        if light and light.Parent == root then
+    for _, descendant in ipairs(char:GetDescendants()) do
+        if descendant:IsA("Light") and descendant.Name ~= "PersistentLanternLight" then
+            local clonedLight = descendant:Clone()
+            clonedLight.Name = "PersistentLanternLight"
+            clonedLight.Parent = root
+            table.insert(persistentLanternLights, clonedLight)
+        end
+    end
+end
+
+local function toggleLanternMode(forceState)
+    if forceState ~= nil then
+        lanternToggleOn = forceState
+    else
+        lanternToggleOn = not lanternToggleOn
+    end
+
+    if lanternButtonRef then
+        lanternButtonRef.BackgroundColor3 = lanternToggleOn and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+    end
+
+    if spinningFloppaImage then
+        spinningFloppaImage.Visible = lanternToggleOn
+    end
+
+    if lanternToggleOn then
+        if spinConnection then spinConnection:Disconnect() end
+        spinConnection = runService.RenderStepped:Connect(function()
+            if spinningFloppaImage and spinningFloppaImage.Visible then
+                spinningFloppaImage.Rotation = (spinningFloppaImage.Rotation + 3) % 360
+            end
+        end)
+
+        if player.Character then
+            removePersistentLanternLights()
+            captureAndPersistLanternLight(player.Character)
+        end
+    else
+        if spinConnection then
+            spinConnection:Disconnect()
+            spinConnection = nil
+        end
+        removePersistentLanternLights()
+    end
+end
+
+-- =========================================================
+-- NEXTBOT RED GLOW ENGINE (EXCLUSIVELY FOR NEXTBOTS)
+-- =========================================================
+
+local function applyNextbotGlow(model)
+    if not model or not model:IsA("Model") then return end
+    
+    if game.Players:GetPlayerFromCharacter(model) then return end
+
+    local primaryPart = model.PrimaryPart or model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("RootPart") or model:FindFirstChildWhichIsA("BasePart")
+    if not primaryPart then return end
+
+    if not nextbotGlows[model] or not nextbotGlows[model].Parent then
+        local redLight = Instance.new("PointLight")
+        redLight.Name = "NextbotRedGlow"
+        redLight.Color = Color3.fromRGB(255, 0, 0)
+        redLight.Brightness = 3.5
+        redLight.Range = 25
+        redLight.Shadows = false
+        redLight.Parent = primaryPart
+        nextbotGlows[model] = redLight
+    end
+end
+
+local function removeAllNextbotGlows()
+    for model, light in pairs(nextbotGlows) do
+        if light and light.Parent then
             light:Destroy()
-            darkLights[plr] = nil
         end
     end
+    nextbotGlows = {}
+end
 
-    local light = Instance.new("PointLight")
-    light.Color = Color3.fromRGB(255, 255, 255)
-    light.Brightness = 2.0
-    light.Range = 30
-    light.Shadows = false
-    light.Parent = root
+local function scanAndGlowNextbots()
+    if not darkModeOn then return end
 
-    for _, plr in ipairs(game.Players:GetPlayers()) do
-        if plr.Character == char then
-            darkLights[plr] = light
-            break
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and not game.Players:GetPlayerFromCharacter(obj) then
+            local isNextbot = obj.Name:lower():find("nextbot") or obj.Name:lower():find("bot")
+            if isNextbot then
+                applyNextbotGlow(obj)
+            end
         end
     end
 end
 
-local function removeAllLights()
-    for _, light in pairs(darkLights) do
-        if light then light:Destroy() end
-    end
-    darkLights = {}
+-- =========================================================
+-- SHOOTING STAR ENGINE
+-- =========================================================
+
+local starColors = {
+    Color3.fromRGB(255, 255, 255),
+    Color3.fromRGB(120, 220, 255),
+    Color3.fromRGB(255, 150, 220),
+    Color3.fromRGB(255, 230, 100),
+    Color3.fromRGB(160, 100, 255),
+    Color3.fromRGB(100, 255, 180)
+}
+
+local function spawnShootingStar()
+    if not shootingStarGui then return end
+
+    local starTrail = Instance.new("Frame")
+    local randomColor = starColors[math.random(1, #starColors)]
+    
+    starTrail.Size = UDim2.new(0, math.random(60, 120), 0, 2)
+    starTrail.Rotation = math.random(25, 45)
+    starTrail.BackgroundColor3 = randomColor
+    starTrail.BorderSizePixel = 0
+    starTrail.BackgroundTransparency = 0.1
+
+    local startX = math.random(1, 80) / 100
+    local startY = math.random(1, 40) / 100
+    starTrail.Position = UDim2.new(startX, 0, startY, 0)
+    starTrail.Parent = shootingStarGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = starTrail
+
+    local gradient = Instance.new("UIGradient")
+    gradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, randomColor),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 255))
+    })
+    gradient.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(0.7, 0.2),
+        NumberSequenceKeypoint.new(1, 0)
+    })
+    gradient.Parent = starTrail
+
+    local distanceX = math.random(20, 40) / 100
+    local distanceY = math.random(15, 30) / 100
+    local duration = math.random(4, 9) / 10
+
+    local moveTween = tweenService:Create(starTrail, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
+        Position = UDim2.new(startX + distanceX, 0, startY + distanceY, 0),
+        BackgroundTransparency = 1
+    })
+
+    moveTween:Play()
+    moveTween.Completed:Connect(function()
+        starTrail:Destroy()
+    end)
 end
 
--- DARK MODE WITH STARRY SKY
+local function startShootingStars()
+    if shootingStarGui then shootingStarGui:Destroy() end
+
+    shootingStarGui = Instance.new("ScreenGui")
+    shootingStarGui.Name = "DarkNightShootingStars"
+    shootingStarGui.ResetOnSpawn = false
+    shootingStarGui.DisplayOrder = 1
+    shootingStarGui.Parent = playerGui
+
+    if shootingStarTask then task.cancel(shootingStarTask) end
+
+    shootingStarTask = task.spawn(function()
+        while darkModeOn do
+            task.wait(math.random(15, 35) / 10)
+            if darkModeOn then
+                spawnShootingStar()
+            end
+        end
+    end)
+end
+
+local function stopShootingStars()
+    if shootingStarTask then
+        task.cancel(shootingStarTask)
+        shootingStarTask = nil
+    end
+    if shootingStarGui then
+        shootingStarGui:Destroy()
+        shootingStarGui = nil
+    end
+end
+
+-- DARK MODE (PITCH BLACK SKY + BRIGHT GROUND)
 local function applyNightTime()
-    originalLighting = {
-        Brightness = lighting.Brightness,
-        Ambient = lighting.Ambient,
-        OutdoorAmbient = lighting.OutdoorAmbient,
-        ClockTime = lighting.ClockTime,
-        GlobalShadows = lighting.GlobalShadows,
-        FogEnd = lighting.FogEnd,
-        FogStart = lighting.FogStart,
-    }
+    if isUpdatingLighting then return end
+    isUpdatingLighting = true
 
-    -- Balanced dark lighting (visible ground, dark aesthetic)
-    lighting.Brightness = 0.35
-    lighting.Ambient = Color3.fromRGB(55, 50, 75)
-    lighting.OutdoorAmbient = Color3.fromRGB(45, 40, 65)
-    lighting.ClockTime = 0 -- Midnight
-    lighting.GlobalShadows = true
+    lighting.Brightness = 2.0
+    lighting.Ambient = Color3.fromRGB(150, 150, 150)
+    lighting.OutdoorAmbient = Color3.fromRGB(140, 140, 140)
+    lighting.ClockTime = 0
+    lighting.ExposureCompensation = 0
+    lighting.GlobalShadows = false 
 
-    -- Remove map fog
-    lighting.FogStart = 1000000
-    lighting.FogEnd = 10000000
+    lighting.FogStart = 0
+    lighting.FogEnd = 8000
+    lighting.FogColor = Color3.fromRGB(0, 0, 0)
 
-    -- Temporarily disable atmospheres
-    originalAtmosphereParents = {}
     for _, child in ipairs(lighting:GetChildren()) do
-        if child:IsA("Atmosphere") then
-            table.insert(originalAtmosphereParents, { object = child, parent = child.Parent })
+        if (child:IsA("Atmosphere") or child:IsA("Sky") or child:IsA("PostEffect")) and child.Name ~= "CustomStarrySky" and child.Name ~= "CustomBlackAtmosphere" then
+            table.insert(hiddenMapLightingObjects, { object = child, parent = child.Parent })
             child.Parent = nil
         end
     end
 
-    if starrySky then starrySky:Destroy() end
+    if not customAtmosphere or customAtmosphere.Parent ~= lighting then
+        if customAtmosphere then customAtmosphere:Destroy() end
+        customAtmosphere = Instance.new("Atmosphere")
+        customAtmosphere.Name = "CustomBlackAtmosphere"
+        customAtmosphere.Density = 0.5
+        customAtmosphere.Offset = 0
+        customAtmosphere.Color = Color3.fromRGB(0, 0, 0)
+        customAtmosphere.Decay = Color3.fromRGB(0, 0, 0)
+        customAtmosphere.Glare = 0
+        customAtmosphere.Haze = 0
+        customAtmosphere.Parent = lighting
+    end
 
-    -- Custom Starry Skybox
-    starrySky = Instance.new("Sky")
-    starrySky.Name = "CustomStarrySky"
-    starrySky.SkyboxBk = "rbxassetid://60348217"
-    starrySky.SkyboxDn = "rbxassetid://60348217"
-    starrySky.SkyboxFt = "rbxassetid://60348217"
-    starrySky.SkyboxLf = "rbxassetid://60348217"
-    starrySky.SkyboxRt = "rbxassetid://60348217"
-    starrySky.SkyboxUp = "rbxassetid://60348217"
-    starrySky.StarCount = 5000
-    starrySky.CelestialBodiesShown = true
-    starrySky.Parent = lighting
+    if not starrySky or starrySky.Parent ~= lighting then
+        if starrySky then starrySky:Destroy() end
+        starrySky = Instance.new("Sky")
+        starrySky.Name = "CustomStarrySky"
+        
+        starrySky.SkyboxBk = "rbxassetid://60348217"
+        starrySky.SkyboxDn = "rbxassetid://60348217"
+        starrySky.SkyboxFt = "rbxassetid://60348217"
+        starrySky.SkyboxLf = "rbxassetid://60348217"
+        starrySky.SkyboxRt = "rbxassetid://60348217"
+        starrySky.SkyboxUp = "rbxassetid://60348217"
+        
+        starrySky.StarCount = 5000
+        starrySky.CelestialBodiesShown = false
+        starrySky.Parent = lighting
+    end
+
+    scanAndGlowNextbots()
+
+    isUpdatingLighting = false
 end
 
 local function restoreLighting()
-    lighting.Brightness = originalLighting.Brightness or 1
-    lighting.Ambient = originalLighting.Ambient or Color3.fromRGB(128, 128, 128)
-    lighting.OutdoorAmbient = originalLighting.OutdoorAmbient or Color3.fromRGB(128, 128, 128)
-    lighting.ClockTime = originalLighting.ClockTime or 14
-    lighting.FogEnd = originalLighting.FogEnd or 100000
-    lighting.FogStart = originalLighting.FogStart or 0
-
-    if originalLighting.GlobalShadows ~= nil then
-        lighting.GlobalShadows = originalLighting.GlobalShadows
-    end
-    originalLighting = {}
-
-    -- Restore Atmosphere objects
-    for _, data in ipairs(originalAtmosphereParents) do
-        if data.object then
-            data.object.Parent = data.parent or lighting
-        end
-    end
-    originalAtmosphereParents = {}
+    isUpdatingLighting = true
 
     if starrySky then
         starrySky:Destroy()
         starrySky = nil
     end
+    if customAtmosphere then
+        customAtmosphere:Destroy()
+        customAtmosphere = nil
+    end
+
+    for _, obj in ipairs(lighting:GetChildren()) do
+        if obj:IsA("Sky") or obj:IsA("Atmosphere") then
+            obj:Destroy()
+        end
+    end
+
+    for _, data in ipairs(hiddenMapLightingObjects) do
+        if data.object then
+            data.object.Parent = data.parent or lighting
+            if data.object:IsA("PostEffect") then
+                data.object.Enabled = true
+            end
+        end
+    end
+    hiddenMapLightingObjects = {}
+
+    lighting.Brightness = (defaultMapLighting.Brightness and defaultMapLighting.Brightness > 0) and defaultMapLighting.Brightness or 2.5
+    lighting.Ambient = defaultMapLighting.Ambient or Color3.fromRGB(130, 130, 130)
+    lighting.OutdoorAmbient = defaultMapLighting.OutdoorAmbient or Color3.fromRGB(130, 130, 130)
+    lighting.ClockTime = defaultMapLighting.ClockTime or 14.5
+    lighting.FogEnd = 100000
+    lighting.FogStart = 0
+    lighting.FogColor = Color3.fromRGB(190, 190, 190)
+    lighting.ExposureCompensation = 0
+    lighting.GlobalShadows = true
+
+    removeAllNextbotGlows()
+
+    isUpdatingLighting = false
 end
 
-local function toggleDarkMode()
-    darkModeOn = not darkModeOn
+local function toggleDarkMode(forceState)
+    if forceState ~= nil then
+        darkModeOn = forceState
+    else
+        darkModeOn = not darkModeOn
+    end
 
     if darkModeOn then
         applyNightTime()
-        for _, plr in ipairs(game.Players:GetPlayers()) do
-            if plr.Character then addLightToCharacter(plr.Character) end
-        end
+        startShootingStars()
     else
+        stopShootingStars()
         restoreLighting()
-        removeAllLights()
     end
 
     if darkButtonRef then
         darkButtonRef.BackgroundColor3 = darkModeOn and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
     end
 end
+
+-- LISTENERS FOR MAP LOADS AND NEXTBOT SPAWNS
+table.insert(connections, lighting.ChildAdded:Connect(function(child)
+    if darkModeOn and not isUpdatingLighting then
+        task.defer(applyNightTime)
+    end
+end))
+
+table.insert(connections, lighting.Changed:Connect(function(property)
+    if darkModeOn and not isUpdatingLighting then
+        if property == "ClockTime" or property == "Brightness" or property == "Ambient" or property == "OutdoorAmbient" then
+            task.defer(applyNightTime)
+        end
+    end
+end))
+
+table.insert(connections, workspace.DescendantAdded:Connect(function(descendant)
+    if textureRemovalOn then
+        task.defer(function()
+            processPartForFPS(descendant)
+        end)
+    end
+    if darkModeOn then
+        if descendant:IsA("Model") and not game.Players:GetPlayerFromCharacter(descendant) then
+            task.defer(function()
+                local isNextbot = descendant.Name:lower():find("nextbot") or descendant.Name:lower():find("bot")
+                if isNextbot then
+                    applyNextbotGlow(descendant)
+                end
+            end)
+        end
+    end
+end))
 
 -- Rejoin function
 local function rejoinSameServer()
@@ -327,14 +653,21 @@ local function rejoinSameServer()
     end
 end
 
-local function onPlayerAdded(plr)
-    plr.CharacterAdded:Connect(function(char)
-        if darkModeOn then addLightToCharacter(char) end
-    end)
-end
+-- UNLOAD SCRIPT
+local function destroyScript()
+    if textureRemovalOn then toggleTextureRemoval(false) end
+    if darkModeOn then toggleDarkMode(false) end
+    if lanternToggleOn then toggleLanternMode(false) end
 
-for _, plr in ipairs(game.Players:GetPlayers()) do onPlayerAdded(plr) end
-game.Players.PlayerAdded:Connect(onPlayerAdded)
+    for _, conn in ipairs(connections) do
+        if conn then conn:Disconnect() end
+    end
+    connections = {}
+
+    if mainGuiRef then
+        mainGuiRef:Destroy()
+    end
+end
 
 -- =========================================================
 -- 3. MAIN UI CREATION
@@ -347,7 +680,83 @@ local function createGUI()
     local gui = Instance.new("ScreenGui")
     gui.Name = "AutoJumpNotification"
     gui.ResetOnSpawn = false
+    gui.DisplayOrder = 999999
     gui.Parent = playerGui
+    mainGuiRef = gui
+
+    local meowSound = Instance.new("Sound")
+    meowSound.Name = "FloppaMeowSound"
+    meowSound.SoundId = "rbxassetid://5104257032"
+    meowSound.Volume = 1.0
+    meowSound.PlaybackSpeed = 1.4
+    meowSound.Parent = gui
+
+    local mainControlsContainer = Instance.new("Frame")
+    mainControlsContainer.Size = UDim2.new(1, 0, 1, 0)
+    mainControlsContainer.BackgroundTransparency = 1
+    mainControlsContainer.Parent = gui
+
+    local floppaToggleButton = Instance.new("ImageButton")
+    floppaToggleButton.Size = UDim2.new(0, 45, 0, 45)
+    floppaToggleButton.Position = UDim2.new(1, -60, 0, 15)
+    floppaToggleButton.BackgroundTransparency = 0.2
+    floppaToggleButton.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    floppaToggleButton.Image = "rbxthumb://type=Asset&id=9913176040&w=420&h=420"
+    floppaToggleButton.ScaleType = Enum.ScaleType.Fit
+    floppaToggleButton.Parent = gui
+
+    local floppaCorner = Instance.new("UICorner")
+    floppaCorner.CornerRadius = UDim.new(0, 8)
+    floppaCorner.Parent = floppaToggleButton
+
+    local floppaStroke = Instance.new("UIStroke")
+    floppaStroke.Color = Color3.fromRGB(0, 220, 120)
+    floppaStroke.Thickness = 2
+    floppaStroke.Parent = floppaToggleButton
+
+    local isIconAnimating = false
+    floppaToggleButton.MouseButton1Click:Connect(function()
+        if meowSound and not meowSound.IsPlaying then
+            meowSound.TimePosition = 0
+            meowSound:Play()
+        end
+
+        mainControlsContainer.Visible = not mainControlsContainer.Visible
+
+        if not isIconAnimating then
+            isIconAnimating = true
+
+            local originalStrokeColor = floppaStroke.Color
+            floppaStroke.Color = Color3.fromRGB(255, 255, 255)
+
+            floppaToggleButton.Rotation = 0
+            local animInfo = TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+            local scaleUpAndSpin = tweenService:Create(floppaToggleButton, animInfo, {
+                Size = UDim2.new(0, 56, 0, 56),
+                Position = UDim2.new(1, -65, 0, 10),
+                Rotation = 360
+            })
+
+            scaleUpAndSpin:Play()
+
+            scaleUpAndSpin.Completed:Connect(function()
+                floppaToggleButton.Rotation = 0
+
+                local returnInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+                local scaleBack = tweenService:Create(floppaToggleButton, returnInfo, {
+                    Size = UDim2.new(0, 45, 0, 45),
+                    Position = UDim2.new(1, -60, 0, 15)
+                })
+
+                tweenService:Create(floppaStroke, returnInfo, { Color = originalStrokeColor }):Play()
+
+                scaleBack:Play()
+                scaleBack.Completed:Connect(function()
+                    isIconAnimating = false
+                end)
+            end)
+        end
+    end)
 
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(0, 160, 0, 36)
@@ -359,7 +768,7 @@ local function createGUI()
     label.Font = Enum.Font.GothamBold
     label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     label.TextStrokeTransparency = 0.4
-    label.Parent = gui
+    label.Parent = mainControlsContainer
 
     local subLabel = Instance.new("TextLabel")
     subLabel.Size = UDim2.new(0, 160, 0, 18)
@@ -371,7 +780,47 @@ local function createGUI()
     subLabel.Font = Enum.Font.Gotham
     subLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     subLabel.TextStrokeTransparency = 0.3
-    subLabel.Parent = gui
+    subLabel.Parent = mainControlsContainer
+
+    local lanternInstruction = Instance.new("TextLabel")
+    lanternInstruction.Size = UDim2.new(0, 240, 0, 32)
+    lanternInstruction.Position = UDim2.new(0.5, -120, 0, 66)
+    lanternInstruction.BackgroundTransparency = 1
+    lanternInstruction.Text = "equip your lantern and unequip the light will stay click the refresh toggle to turn it off"
+    lanternInstruction.TextColor3 = Color3.fromRGB(178, 230, 178)
+    lanternInstruction.TextSize = 10
+    lanternInstruction.Font = Enum.Font.Gotham
+    lanternInstruction.TextWrapped = true
+    lanternInstruction.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    lanternInstruction.TextStrokeTransparency = 0.3
+    lanternInstruction.Parent = mainControlsContainer
+
+    lanternButtonRef = Instance.new("TextButton")
+    lanternButtonRef.Size = UDim2.new(0, 65, 0, 25)
+    lanternButtonRef.Position = UDim2.new(0.5, -200, 0, 68)
+    lanternButtonRef.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    lanternButtonRef.TextColor3 = Color3.fromRGB(255, 255, 255)
+    lanternButtonRef.TextSize = 11
+    lanternButtonRef.Font = Enum.Font.GothamBold
+    lanternButtonRef.Text = "Lantern"
+    lanternButtonRef.Parent = mainControlsContainer
+
+    local lanternCorner = Instance.new("UICorner")
+    lanternCorner.CornerRadius = UDim.new(0, 6)
+    lanternCorner.Parent = lanternButtonRef
+
+    spinningFloppaImage = Instance.new("ImageLabel")
+    spinningFloppaImage.Size = UDim2.new(0, 22, 0, 22)
+    spinningFloppaImage.Position = UDim2.new(0.5, -228, 0, 69)
+    spinningFloppaImage.BackgroundTransparency = 1
+    spinningFloppaImage.Image = "rbxthumb://type=Asset&id=9913176040&w=420&h=420"
+    spinningFloppaImage.ScaleType = Enum.ScaleType.Fit
+    spinningFloppaImage.Visible = false
+    spinningFloppaImage.Parent = mainControlsContainer
+
+    local imageCorner = Instance.new("UICorner")
+    imageCorner.CornerRadius = UDim.new(1, 0)
+    imageCorner.Parent = spinningFloppaImage
 
     -- FPS Button
     fpsButtonRef = Instance.new("TextButton")
@@ -382,7 +831,7 @@ local function createGUI()
     fpsButtonRef.TextScaled = true
     fpsButtonRef.Font = Enum.Font.GothamBold
     fpsButtonRef.Text = "FPS"
-    fpsButtonRef.Parent = gui
+    fpsButtonRef.Parent = mainControlsContainer
 
     local fpsHint = Instance.new("TextLabel")
     fpsHint.Size = UDim2.new(0, 60, 0, 20)
@@ -394,7 +843,22 @@ local function createGUI()
     fpsHint.Font = Enum.Font.Gotham
     fpsHint.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     fpsHint.TextStrokeTransparency = 0.3
-    fpsHint.Parent = gui
+    fpsHint.Parent = mainControlsContainer
+
+    -- Destroy Button
+    destroyButtonRef = Instance.new("TextButton")
+    destroyButtonRef.Size = UDim2.new(0, 110, 0, 25)
+    destroyButtonRef.Position = UDim2.new(0.5, 220, 0, 10)
+    destroyButtonRef.BackgroundColor3 = Color3.fromRGB(200, 30, 30)
+    destroyButtonRef.TextColor3 = Color3.fromRGB(255, 255, 255)
+    destroyButtonRef.TextSize = 12
+    destroyButtonRef.Font = Enum.Font.GothamBold
+    destroyButtonRef.Text = "destroy script"
+    destroyButtonRef.Parent = mainControlsContainer
+
+    local destroyCorner = Instance.new("UICorner")
+    destroyCorner.CornerRadius = UDim.new(0, 6)
+    destroyCorner.Parent = destroyButtonRef
 
     -- Dark Button
     darkButtonRef = Instance.new("TextButton")
@@ -405,7 +869,7 @@ local function createGUI()
     darkButtonRef.TextScaled = true
     darkButtonRef.Font = Enum.Font.GothamBold
     darkButtonRef.Text = "Dark"
-    darkButtonRef.Parent = gui
+    darkButtonRef.Parent = mainControlsContainer
 
     local darkHint = Instance.new("TextLabel")
     darkHint.Size = UDim2.new(0, 60, 0, 20)
@@ -417,7 +881,7 @@ local function createGUI()
     darkHint.Font = Enum.Font.Gotham
     darkHint.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     darkHint.TextStrokeTransparency = 0.3
-    darkHint.Parent = gui
+    darkHint.Parent = mainControlsContainer
 
     -- Rejoin Button
     rejoinButtonRef = Instance.new("TextButton")
@@ -428,7 +892,7 @@ local function createGUI()
     rejoinButtonRef.TextScaled = true
     rejoinButtonRef.Font = Enum.Font.GothamBold
     rejoinButtonRef.Text = "Rejoin"
-    rejoinButtonRef.Parent = gui
+    rejoinButtonRef.Parent = mainControlsContainer
 
     local rejoinHint = Instance.new("TextLabel")
     rejoinHint.Size = UDim2.new(0, 60, 0, 20)
@@ -440,17 +904,19 @@ local function createGUI()
     rejoinHint.Font = Enum.Font.Gotham
     rejoinHint.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     rejoinHint.TextStrokeTransparency = 0.3
-    rejoinHint.Parent = gui
+    rejoinHint.Parent = mainControlsContainer
 
-    fpsButtonRef.MouseButton1Click:Connect(toggleTextureRemoval)
-    darkButtonRef.MouseButton1Click:Connect(toggleDarkMode)
+    fpsButtonRef.MouseButton1Click:Connect(function() toggleTextureRemoval() end)
+    darkButtonRef.MouseButton1Click:Connect(function() toggleDarkMode() end)
+    lanternButtonRef.MouseButton1Click:Connect(function() toggleLanternMode() end)
     rejoinButtonRef.MouseButton1Click:Connect(rejoinSameServer)
+    destroyButtonRef.MouseButton1Click:Connect(destroyScript)
 end
 
 createGUI()
 
 -- =========================================================
--- 4. AUTO-JUMP MECHANICS
+-- 4. AUTO-JUMP & KEYBIND LISTENERS
 -- =========================================================
 
 local isSpaceHeld = false
@@ -479,17 +945,24 @@ local function setupCharacter(char)
 end
 
 if player.Character then setupCharacter(player.Character) end
-player.CharacterAdded:Connect(setupCharacter)
+table.insert(connections, player.CharacterAdded:Connect(setupCharacter))
 
-userInputService.InputBegan:Connect(function(input, gameProcessed)
+table.insert(connections, userInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
+    
     if input.KeyCode == Enum.KeyCode.Space then
         isSpaceHeld = true
         spacePressTime = tick()
+    elseif input.KeyCode == Enum.KeyCode.F then
+        if player.Character and lanternToggleOn then
+            task.delay(0.1, function()
+                captureAndPersistLanternLight(player.Character)
+            end)
+        end
     end
-end)
+end))
 
-userInputService.InputEnded:Connect(function(input, gameProcessed)
+table.insert(connections, userInputService.InputEnded:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.KeyCode == Enum.KeyCode.Space then
         isSpaceHeld = false
@@ -498,12 +971,12 @@ userInputService.InputEnded:Connect(function(input, gameProcessed)
             performJump()
         end
     end
-end)
+end))
 
-runService.PostSimulation:Connect(function()
+table.insert(connections, runService.PostSimulation:Connect(function()
     if not isSpaceHeld then return end
     if tick() - spacePressTime < HOLD_DELAY then return end
     if isFullyGrounded() then
         performJump()
     end
-end)
+end))
