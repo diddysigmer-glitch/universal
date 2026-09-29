@@ -1,0 +1,667 @@
+--[[
+    AUTO SERVER HOP SCRIPT v12 (Anti-Broken Server + AFK Detector)
+    - v11: Highest = >=5 free slots; Lowest = emptiest across scan; Force = first joinable.
+    - v12: + Post-join AFK/broken-server validation. Hops out of dead servers
+             (majority-AFK, round-started-empty) regardless of population mode.
+    - v12: + Skips servers reporting <2 real players during Highest scan.
+    - v12: + UI toggle for AFK Watch.
+]]
+
+-- ============================================
+-- SERVICES
+-- ============================================
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+local GuiService = game:GetService("GuiService")
+local LocalPlayer = Players.LocalPlayer
+
+local httpRequest = (syn and syn.request) or (http and http.request) or request or http_request or (fluxus and fluxus.request)
+
+-- ============================================
+-- UNIVERSAL CONFIG
+-- ============================================
+local MIN_FREE_SLOTS   = 5     -- Highest target must have >= this many free slots
+local MAX_PAGES        = 25    -- scan up to 2,500 servers
+
+-- v12: Anti-broken / AFK detection
+local AFK_GRACE_PERIOD       = 20    -- seconds to wait after joining before AFK check
+local AFK_RATIO_TRIGGER      = 0.6   -- 60%+ of players AFK => server considered dead
+local MIN_PLAYERS_FOR_AFK    = 4     -- don't run AFK check on tiny servers
+local MIN_REAL_PLAYERS_SCAN  = 2     -- Highest scan skips servers with < this many playing
+
+-- ============================================
+-- CLEANUP & STATE
+-- ============================================
+if _G.ServerHopActive then
+    _G.ServerHopKill = true
+    task.wait(1)
+end
+
+local oldGui = CoreGui:FindFirstChild("ServerHopUI")
+if oldGui then oldGui:Destroy() end
+
+_G.ServerHopActive = true
+_G.ServerHopKill = false
+
+local blacklist         = {}
+local isHopping         = false
+local lastAttemptedServer = nil
+local lastHopTime       = 0
+
+local JOIN_TIME         = os.time()   -- timestamp of when this script instance started (per server)
+local afkChecked        = false
+
+-- ============================================
+-- SAVE / LOAD SETTINGS
+-- ============================================
+local SAVE_FILE = "ServerHopSettings.json"
+local settings = {threshold = 4, mode = "Highest", running = false, afkWatch = true}
+
+local function saveSettings()
+    pcall(function() writefile(SAVE_FILE, HttpService:JSONEncode(settings)) end)
+end
+
+local function loadSettings()
+    local success, data = pcall(function()
+        if isfile(SAVE_FILE) then return HttpService:JSONDecode(readfile(SAVE_FILE)) end
+    end)
+    if success and data then
+        settings.threshold = tonumber(data.threshold) or 4
+        settings.mode      = data.mode or "Highest"
+        settings.running   = (data.running == true)
+        settings.afkWatch  = (data.afkWatch ~= false)   -- default ON
+    end
+end
+loadSettings()
+
+local isRunning = settings.running
+local CHECK_INTERVAL = 3
+local RETRY_DELAY    = 3
+local REEXEC_DELAY   = 10
+local STUCK_TIMEOUT  = 8
+
+local checkPopulation
+local performHop
+
+-- ============================================
+-- UI CREATION
+-- ============================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ServerHopUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local function trySetParent(target)
+    if not target then return false end
+    local ok = pcall(function() ScreenGui.Parent = target end)
+    return ok and ScreenGui.Parent ~= nil
+end
+
+if not trySetParent(CoreGui) then
+    if gethui then pcall(function() ScreenGui.Parent = gethui() end) end
+    if not ScreenGui.Parent then
+        ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    end
+end
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 240, 0, 273)
+MainFrame.Position = UDim2.new(0, 20, 0.5, -136)
+MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
+Instance.new("UIStroke", MainFrame).Color = Color3.fromRGB(50, 50, 70)
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 32)
+TitleBar.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
+TitleBar.Parent = MainFrame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Text = "⚡ SERVER HOP v12"
+TitleLabel.Size = UDim2.new(1, -10, 1, 0)
+TitleLabel.Position = UDim2.new(0, 10, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.TextColor3 = Color3.fromRGB(220, 220, 240)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 14
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Parent = TitleBar
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, -20, 0, 14)
+StatusLabel.Position = UDim2.new(0, 10, 0, 40)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.TextColor3 = Color3.fromRGB(120, 120, 145)
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextSize = 11
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Parent = MainFrame
+
+local PlayerCountLabel = Instance.new("TextLabel")
+PlayerCountLabel.Size = UDim2.new(1, -20, 0, 14)
+PlayerCountLabel.Position = UDim2.new(0, 10, 0, 56)
+PlayerCountLabel.BackgroundTransparency = 1
+PlayerCountLabel.TextColor3 = Color3.fromRGB(120, 120, 145)
+PlayerCountLabel.Font = Enum.Font.Gotham
+PlayerCountLabel.TextSize = 11
+PlayerCountLabel.TextXAlignment = Enum.TextXAlignment.Left
+PlayerCountLabel.Parent = MainFrame
+
+local ThreshLabel = Instance.new("TextLabel")
+ThreshLabel.Size = UDim2.new(1, -20, 0, 14)
+ThreshLabel.Position = UDim2.new(0, 10, 0, 78)
+ThreshLabel.BackgroundTransparency = 1
+ThreshLabel.TextColor3 = Color3.fromRGB(170, 170, 190)
+ThreshLabel.Font = Enum.Font.GothamBold
+ThreshLabel.TextSize = 11
+ThreshLabel.TextXAlignment = Enum.TextXAlignment.Left
+ThreshLabel.Parent = MainFrame
+
+local ThreshRow = Instance.new("Frame")
+ThreshRow.Size = UDim2.new(1, -20, 0, 28)
+ThreshRow.Position = UDim2.new(0, 10, 0, 94)
+ThreshRow.BackgroundTransparency = 1
+ThreshRow.Parent = MainFrame
+
+local MinusBtn = Instance.new("TextButton")
+MinusBtn.Size = UDim2.new(0, 32, 1, 0)
+MinusBtn.BackgroundColor3 = Color3.fromRGB(60, 35, 35)
+MinusBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+MinusBtn.Text = "-"
+MinusBtn.Parent = ThreshRow
+Instance.new("UICorner", MinusBtn).CornerRadius = UDim.new(0, 6)
+
+local ThreshValue = Instance.new("TextLabel")
+ThreshValue.Size = UDim2.new(0, 50, 1, 0)
+ThreshValue.Position = UDim2.new(0, 38, 0, 0)
+ThreshValue.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+ThreshValue.TextColor3 = Color3.fromRGB(255, 255, 255)
+ThreshValue.Parent = ThreshRow
+Instance.new("UICorner", ThreshValue).CornerRadius = UDim.new(0, 6)
+
+local PlusBtn = Instance.new("TextButton")
+PlusBtn.Size = UDim2.new(0, 32, 1, 0)
+PlusBtn.Position = UDim2.new(0, 94, 0, 0)
+PlusBtn.BackgroundColor3 = Color3.fromRGB(35, 60, 35)
+PlusBtn.TextColor3 = Color3.fromRGB(120, 255, 120)
+PlusBtn.Text = "+"
+PlusBtn.Parent = ThreshRow
+Instance.new("UICorner", PlusBtn).CornerRadius = UDim.new(0, 6)
+
+local ModeButton = Instance.new("TextButton")
+ModeButton.Size = UDim2.new(1, -20, 0, 30)
+ModeButton.Position = UDim2.new(0, 10, 0, 130)
+ModeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ModeButton.Font = Enum.Font.GothamBold
+ModeButton.Parent = MainFrame
+Instance.new("UICorner", ModeButton).CornerRadius = UDim.new(0, 6)
+
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Size = UDim2.new(1, -20, 0, 32)
+ToggleButton.Position = UDim2.new(0, 10, 0, 166)
+ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.Parent = MainFrame
+Instance.new("UICorner", ToggleButton).CornerRadius = UDim.new(0, 6)
+
+local AFKButton = Instance.new("TextButton")
+AFKButton.Size = UDim2.new(1, -20, 0, 26)
+AFKButton.Position = UDim2.new(0, 10, 0, 202)
+AFKButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+AFKButton.Font = Enum.Font.GothamBold
+AFKButton.TextSize = 12
+AFKButton.Parent = MainFrame
+Instance.new("UICorner", AFKButton).CornerRadius = UDim.new(0, 6)
+
+local ForceButton = Instance.new("TextButton")
+ForceButton.Size = UDim2.new(1, -20, 0, 26)
+ForceButton.Position = UDim2.new(0, 10, 0, 234)
+ForceButton.BackgroundColor3 = Color3.fromRGB(100, 40, 40)
+ForceButton.TextColor3 = Color3.fromRGB(255, 180, 180)
+ForceButton.Text = "⚡ FORCE HOP NOW"
+ForceButton.Font = Enum.Font.GothamBold
+ForceButton.TextSize = 12
+ForceButton.Parent = MainFrame
+Instance.new("UICorner", ForceButton).CornerRadius = UDim.new(0, 6)
+
+-- ============================================
+-- UI LOGIC
+-- ============================================
+local function updatePlayerCount()
+    local count = #Players:GetPlayers()
+    PlayerCountLabel.Text = ("Players: %d | Trigger Hop %s %d"):format(
+        count, settings.mode == "Highest" and "≤" or "≥", settings.threshold)
+end
+
+local function updateDynamicUI()
+    if settings.mode == "Highest" then
+        ModeButton.Text = "⬆ TARGET: HIGHEST POP"
+        ModeButton.BackgroundColor3 = Color3.fromRGB(30, 110, 80)
+        ThreshLabel.Text = "Hop when players ≤"
+    else
+        ModeButton.Text = "⬇ TARGET: LOWEST POP"
+        ModeButton.BackgroundColor3 = Color3.fromRGB(40, 70, 150)
+        ThreshLabel.Text = "Hop for servers under"
+    end
+    ThreshValue.Text = tostring(settings.threshold)
+    updatePlayerCount()
+end
+
+local function updateToggleButton()
+    ToggleButton.Text = isRunning and "■ STOP" or "▶ START"
+    ToggleButton.BackgroundColor3 = isRunning and Color3.fromRGB(160, 50, 50) or Color3.fromRGB(40, 140, 70)
+end
+
+local function updateAFKButton()
+    if settings.afkWatch then
+        AFKButton.Text = "👁 AFK WATCH: ON"
+        AFKButton.BackgroundColor3 = Color3.fromRGB(35, 90, 130)
+    else
+        AFKButton.Text = "👁 AFK WATCH: OFF"
+        AFKButton.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    end
+end
+
+local function updateStatus(text)
+    pcall(function() StatusLabel.Text = "Status: " .. text end)
+end
+
+updateDynamicUI()
+updateToggleButton()
+updateAFKButton()
+
+MinusBtn.MouseButton1Click:Connect(function()
+    if settings.threshold > 1 then
+        settings.threshold -= 1
+        updateDynamicUI()
+        saveSettings()
+    end
+end)
+
+PlusBtn.MouseButton1Click:Connect(function()
+    if settings.threshold < 100 then
+        settings.threshold += 1
+        updateDynamicUI()
+        saveSettings()
+    end
+end)
+
+ModeButton.MouseButton1Click:Connect(function()
+    settings.mode = (settings.mode == "Highest" and "Lowest" or "Highest")
+    updateDynamicUI()
+    saveSettings()
+end)
+
+ToggleButton.MouseButton1Click:Connect(function()
+    isRunning = not isRunning
+    settings.running = isRunning
+    updateToggleButton()
+    saveSettings()
+
+    if isRunning then
+        updateStatus("Running")
+        task.spawn(checkPopulation)
+    else
+        updateStatus("Stopped")
+        isHopping = false
+    end
+end)
+
+AFKButton.MouseButton1Click:Connect(function()
+    settings.afkWatch = not settings.afkWatch
+    updateAFKButton()
+    saveSettings()
+end)
+
+-- ============================================
+-- HTTP API FETCH
+-- ============================================
+local function fetchApiData(url)
+    if httpRequest then
+        local directUrl = url:gsub("roproxy.com", "roblox.com")
+        local success, res = pcall(function() return httpRequest({Url = directUrl, Method = "GET"}) end)
+        if success and res and res.Body then return res.Body end
+    end
+    local s, r = pcall(function() return game:HttpGet(url) end)
+    return s and r or nil
+end
+
+-- ============================================
+-- v12: AFK / BROKEN SERVER DETECTION
+-- ============================================
+-- Many games store AFK players in a folder named "AFK" containing
+-- player-named ObjectValues, or set an AFK attribute on the Player.
+-- We check every known pattern and count unique matches.
+local function countAFKPlayers()
+    local counted = {}
+    local afkCount = 0
+    local total = #Players:GetPlayers()
+
+    local function mark(plrName)
+        if plrName and not counted[plrName] and Players:FindFirstChild(plrName) then
+            counted[plrName] = true
+            afkCount += 1
+        end
+    end
+
+    -- Pattern 1: A top-level "AFK" folder in Players (child names = player names)
+    local afkFolder = Players:FindFirstChild("AFK")
+    if afkFolder then
+        for _, child in ipairs(afkFolder:GetChildren()) do
+            mark(child.Name)
+        end
+    end
+
+    -- Pattern 2: "AFK" folder in Workspace or ReplicatedStorage
+    for _, container in ipairs({
+        workspace,
+        game:GetService("ReplicatedStorage"),
+        game:GetService("ServerStorage") and nil  -- not replicated; skip
+    }) do
+        if container then
+            local f = container:FindFirstChild("AFK")
+            if f and f:IsA("Instance") then
+                for _, child in ipairs(f:GetChildren()) do
+                    mark(child.Name)
+                end
+            end
+        end
+    end
+
+    -- Pattern 3: Per-player attribute
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local ok, isAFK = pcall(function()
+            return plr:GetAttribute("AFK")
+                or plr:GetAttribute("IsAFK")
+                or plr:GetAttribute("afk")
+                or plr:GetAttribute("Afk")
+        end)
+        if ok and isAFK == true then mark(plr.Name) end
+
+        -- Pattern 4: Per-player child object named AFK / IsAFK
+        if plr:FindFirstChild("AFK") or plr:FindFirstChild("IsAFK") then
+            mark(plr.Name)
+        end
+    end
+
+    return math.min(afkCount, total), total
+end
+
+-- Returns: isBroken (bool), afkCount, totalPlayers, reasonString
+local function isServerBroken()
+    local total = #Players:GetPlayers()
+
+    -- Too small to judge.
+    if total < MIN_PLAYERS_FOR_AFK then return false, 0, total, "too small" end
+
+    local afk, _ = countAFKPlayers()
+    local ratio = total > 0 and (afk / total) or 0
+
+    if ratio >= AFK_RATIO_TRIGGER then
+        return true, afk, total, ("%d/%d AFK (%.0f%%)"):format(afk, total, ratio * 100)
+    end
+
+    return false, afk, total, "healthy"
+end
+
+-- ============================================
+-- UNIVERSAL SEARCH ENGINE (v11 behavior, +v12 scan filter)
+-- ============================================
+local function getBestServer(isForce)
+    local cursor    = ""
+    local sortOrder = (settings.mode == "Highest") and "Desc" or "Asc"
+    local scanned   = 0
+    local bestLowest = nil
+
+    for page = 1, MAX_PAGES do
+        updateStatus(("Scanning page %d (%d servers)..."):format(page, scanned))
+
+        local url = ("https://games.roproxy.com/v1/games/%d/servers/Public?sortOrder=%s&limit=100&cursor=%s"):format(
+            game.PlaceId, sortOrder, cursor)
+        local raw = fetchApiData(url)
+        if not raw then
+            updateStatus("API error. Retrying...")
+            break
+        end
+
+        local ok, data = pcall(function() return HttpService:JSONDecode(raw) end)
+        if not ok or not data or not data.data then break end
+
+        for _, srv in ipairs(data.data) do
+            scanned += 1
+            if srv.id ~= game.JobId and not blacklist[srv.id] then
+                local play     = tonumber(srv.playing) or 0
+                local maxP     = tonumber(srv.maxPlayers) or 0
+                local free     = maxP - play
+
+                if free >= 1 then
+                    if isForce then
+                        if play > 0 then
+                            return {id = srv.id, playing = play, freeSlots = free, maxPlayers = maxP}
+                        end
+
+                    elseif settings.mode == "Highest" then
+                        -- v12: skip servers with suspiciously low "playing" counts.
+                        -- These often turn out to be AFK-farm dead servers.
+                        if play >= MIN_REAL_PLAYERS_SCAN
+                           and free >= MIN_FREE_SLOTS
+                           and play > settings.threshold
+                        then
+                            return {id = srv.id, playing = play, freeSlots = free, maxPlayers = maxP}
+                        end
+
+                    elseif settings.mode == "Lowest" then
+                        if play < settings.threshold then
+                            if not bestLowest or play < bestLowest.playing then
+                                bestLowest = {id = srv.id, playing = play, freeSlots = free, maxPlayers = maxP}
+                                if play <= 1 then
+                                    return bestLowest, scanned
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        local nextCursor = data.nextPageCursor
+        if not nextCursor or nextCursor == "" then break end
+        cursor = HttpService:UrlEncode(nextCursor)
+    end
+
+    if settings.mode == "Lowest" then
+        return bestLowest, scanned
+    end
+    return nil, scanned
+end
+
+-- ============================================
+-- TELEPORT ENGINE
+-- ============================================
+performHop = function(reason)
+    if isHopping and (os.time() - lastHopTime) > STUCK_TIMEOUT then
+        isHopping = false
+    end
+
+    if isHopping or (not isRunning and reason ~= "FORCE") then return end
+    isHopping = true
+    lastHopTime = os.time()
+
+    local server, scanned = getBestServer(reason == "FORCE")
+
+    if server then
+        updateStatus(("Joining %d/%d (%d free)..."):format(server.playing, server.maxPlayers, server.freeSlots))
+        lastAttemptedServer = server.id
+        task.wait(0.3)
+
+        local teleportOk = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id, LocalPlayer)
+        end)
+
+        if not teleportOk then
+            blacklist[server.id] = true
+            updateStatus("Teleport call failed. Retrying...")
+            isHopping = false
+            task.spawn(function()
+                task.wait(RETRY_DELAY)
+                if isRunning then performHop("Teleport Call Failed Retry") end
+            end)
+        end
+    else
+        local msg = (scanned and scanned > 0)
+            and ("No match in %d scanned. Retrying..."):format(scanned)
+            or  "No match. Retrying..."
+        updateStatus(msg)
+        task.spawn(function()
+            task.wait(RETRY_DELAY)
+            isHopping = false
+            if isRunning then performHop("Retry Search") end
+        end)
+    end
+end
+
+-- ============================================
+-- POPULATION CHECK
+-- ============================================
+checkPopulation = function()
+    if _G.ServerHopKill or isHopping or not isRunning then return end
+
+    local count = #Players:GetPlayers()
+    updatePlayerCount()
+
+    if settings.mode == "Highest" then
+        if count <= settings.threshold then
+            performHop("Low Pop Trigger (" .. count .. " ≤ " .. settings.threshold .. ")")
+        end
+    elseif settings.mode == "Lowest" then
+        if count >= settings.threshold then
+            performHop("High Pop Trigger (" .. count .. " ≥ " .. settings.threshold .. ")")
+        end
+    end
+end
+
+-- ============================================
+-- v12: POST-JOIN AFK / BROKEN CHECK
+-- ============================================
+local function runAFKCheck()
+    if not settings.afkWatch then return end
+    if not isRunning then return end
+    if isHopping then return end
+
+    local broken, afk, total, reason = isServerBroken()
+    if broken then
+        -- Blacklist the current server so we never come back this session.
+        if game.JobId and game.JobId ~= "" then
+            blacklist[game.JobId] = true
+        end
+        updateStatus(("Server dead (%s). Hopping..."):format(reason))
+        task.wait(0.5)
+        performHop("Dead Server (" .. reason .. ")")
+    end
+end
+
+-- ============================================
+-- ERROR HANDLERS (AUTO-RECOVERY)
+-- ============================================
+GuiService.ErrorMessageChanged:Connect(function()
+    if not isRunning then return end
+    if not lastAttemptedServer then return end
+
+    local ok, msg = pcall(function() return GuiService:GetErrorMessage() end)
+    msg = (ok and msg) or ""
+    local lower = string.lower(msg)
+    local isFullError = string.find(lower, "full", 1, true) ~= nil
+                     or string.find(msg, "772", 1, true) ~= nil
+
+    if not isFullError then return end
+
+    blacklist[lastAttemptedServer] = true
+    print("[ServerHop] Blacklisted full server: " .. lastAttemptedServer)
+    updateStatus("Server Full! Hopping again...")
+    isHopping = false
+    task.wait(0.5)
+    performHop("Error 772 Recovery")
+end)
+
+TeleportService.TeleportInitFailed:Connect(function(player, result, msg)
+    if player ~= LocalPlayer then return end
+
+    if lastAttemptedServer then blacklist[lastAttemptedServer] = true end
+
+    if not isRunning then
+        isHopping = false
+        return
+    end
+
+    updateStatus("Failed. Retrying...")
+    isHopping = false
+    task.wait(1.5)
+    performHop("Teleport Failure Retry")
+end)
+
+ForceButton.MouseButton1Click:Connect(function()
+    performHop("FORCE")
+end)
+
+-- ============================================
+-- BACKGROUND LOOPS & EVENT LISTENERS
+-- ============================================
+local removeDebounce = false
+Players.PlayerRemoving:Connect(function()
+    if removeDebounce then return end
+    removeDebounce = true
+    task.wait(1)
+    removeDebounce = false
+    if isRunning then checkPopulation() end
+end)
+
+Players.PlayerAdded:Connect(function()
+    task.wait(1)
+    updatePlayerCount()
+end)
+
+-- Auto-start delayed handler
+task.spawn(function()
+    if isRunning then
+        for i = REEXEC_DELAY, 1, -1 do
+            if _G.ServerHopKill or not isRunning then break end
+            updateStatus("Auto-start check in " .. i .. "s...")
+            task.wait(1)
+        end
+        if not _G.ServerHopKill and isRunning then
+            updateStatus("Running")
+            checkPopulation()
+        end
+    end
+end)
+
+-- Main monitoring loop
+task.spawn(function()
+    while not _G.ServerHopKill do
+        task.wait(CHECK_INTERVAL)
+        updatePlayerCount()
+
+        if isRunning and not isHopping then
+            checkPopulation()
+
+            -- v12: one-time post-join AFK check per server instance
+            if settings.afkWatch
+               and not afkChecked
+               and (os.time() - JOIN_TIME) >= AFK_GRACE_PERIOD
+            then
+                afkChecked = true
+                task.spawn(runAFKCheck)
+            end
+        end
+    end
+    _G.ServerHopActive = false
+end)
